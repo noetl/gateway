@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "noetl-gateway"
-version = "1.0.0"
+version = "2.8.7"
 dependencies = [
  "anyhow",
  "async-graphql",
