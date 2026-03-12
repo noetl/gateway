@@ -1,5 +1,7 @@
 {
-  "branches": ["main"],
+  "branches": [
+    "main"
+  ],
   "ci": false,
   "plugins": [
     [
@@ -30,15 +32,11 @@
       }
     ],
     [
-      "@semantic-release/exec",
-      {
-        "prepareCmd": "bash -c \"set -euo pipefail; perl -0777 -i -pe 's/^version = \\\".*?\\\"/version = \\\"${nextRelease.version}\\\"/m' Cargo.toml; cargo generate-lockfile\""
-      }
-    ],
-    [
       "@semantic-release/git",
       {
-        "assets": ["Cargo.toml", "Cargo.lock", "CHANGELOG.md"],
+        "assets": [
+          "CHANGELOG.md"
+        ],
         "message": "chore(release): version ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ]
