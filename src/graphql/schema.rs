@@ -6,6 +6,7 @@
 //! This GraphQL schema provides:
 //! - Health check
 //! - executePlaybook mutation (used by auth module for login/validate playbooks)
+//! - rerunExecution mutation (canonical execution rerun flow)
 //! - proxyRequest mutation (generic API proxy for clients preferring GraphQL)
 
 use async_graphql::{Context, EmptySubscription, Json, Object, Result as GqlResult, Schema};
@@ -136,6 +137,86 @@ impl MutationRoot {
             name: result.name.or(Some(name)),
             status: result.status,
             text_output: None, // Results delivered via SSE callback
+        })
+    }
+
+    /// Rerun an existing execution with optional workload overrides.
+    ///
+    /// Uses canonical NoETL rerun endpoint:
+    /// POST /api/executions/{execution_id}/rerun
+    async fn rerun_execution(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Source execution ID to rerun")] execution_id: String,
+        #[graphql(desc = "Workload overrides for rerun")] variables: Option<Json<serde_json::Value>>,
+        #[graphql(desc = "Client ID from SSE connection (for async callbacks)")] client_id: Option<String>,
+    ) -> GqlResult<ExecuteResult> {
+        let client = ctx.data::<Arc<NoetlClient>>()?;
+        let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
+
+        // If client_id is provided, set up async callback tracking for rerun.
+        let request_id = if let Some(cid) = client_id.as_ref() {
+            let request_store = ctx.data::<Arc<RequestStore>>().ok();
+            let config = ctx.data::<Arc<GatewayConfig>>().ok();
+
+            if let Some(store) = request_store {
+                let rid = Uuid::new_v4().to_string();
+                let gateway_url = config
+                    .and_then(|c| c.server.public_url.clone())
+                    .unwrap_or_else(|| "http://gateway.gateway.svc.cluster.local:8090".to_string());
+
+                if let serde_json::Value::Object(ref mut map) = args {
+                    map.insert("request_id".to_string(), serde_json::json!(rid));
+                    map.insert("gateway_url".to_string(), serde_json::json!(gateway_url));
+                }
+
+                Some((rid, cid.clone(), store.clone()))
+            } else {
+                tracing::warn!("Request store not available, async callbacks disabled");
+                None
+            }
+        } else {
+            None
+        };
+
+        let result = client
+            .rerun_execution(&execution_id, args)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        let final_request_id = if let Some((rid, cid, store)) = request_id {
+            let session_token = ctx.data::<String>().map(|s| s.clone()).unwrap_or_default();
+
+            let pending = PendingRequest {
+                client_id: cid,
+                session_token,
+                execution_id: result.execution_id.clone(),
+                playbook_path: format!("rerun:{}", execution_id),
+                created_at: chrono::Utc::now().timestamp(),
+            };
+
+            if let Err(e) = store.put(&rid, &pending).await {
+                tracing::error!("Failed to store pending request: {}", e);
+            } else {
+                tracing::debug!(
+                    "Pending rerun request stored: request_id={}, execution_id={}",
+                    &rid[..8.min(rid.len())],
+                    &result.execution_id[..8.min(result.execution_id.len())]
+                );
+            }
+
+            Some(rid)
+        } else {
+            None
+        };
+
+        Ok(ExecuteResult {
+            id: result.execution_id.clone(),
+            execution_id: result.execution_id,
+            request_id: final_request_id,
+            name: result.name.or(result.path),
+            status: result.status,
+            text_output: None,
         })
     }
 

@@ -39,10 +39,14 @@ impl NoetlClient {
     }
 
     /// Execute a playbook by path.
-    /// POST /api/execute with { path, payload }
+    /// POST /api/execute with { path, workload, resource_kind }
     pub async fn execute_playbook(&self, path: &str, args: serde_json::Value) -> anyhow::Result<ExecutionResponse> {
         let url = format!("{}/api/execute", self.base_url.trim_end_matches('/'));
-        let payload = serde_json::json!({ "path": path, "payload": args });
+        let payload = serde_json::json!({
+            "path": path,
+            "workload": args,
+            "resource_kind": "playbook"
+        });
 
         let res = self
             .http
@@ -59,6 +63,41 @@ impl NoetlClient {
         }
 
         let parsed: ExecutionResponse = serde_json::from_str(&body).context("parse execution response")?;
+        Ok(parsed)
+    }
+
+    /// Rerun an execution with optional workload overrides.
+    /// POST /api/executions/{id}/rerun with { workload, resource_kind }
+    pub async fn rerun_execution(
+        &self,
+        execution_id: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ExecutionResponse> {
+        let url = format!(
+            "{}/api/executions/{}/rerun",
+            self.base_url.trim_end_matches('/'),
+            execution_id
+        );
+        let payload = serde_json::json!({
+            "workload": args,
+            "resource_kind": "playbook"
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("rerun_execution: send")?;
+
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Rerun execution failed: {} - {}", status, body));
+        }
+
+        let parsed: ExecutionResponse = serde_json::from_str(&body).context("parse rerun response")?;
         Ok(parsed)
     }
 
@@ -204,4 +243,5 @@ pub struct ExecutionResponse {
     pub name: Option<String>,
     pub status: Option<String>,
     pub path: Option<String>,
+    pub resource_kind: Option<String>,
 }
