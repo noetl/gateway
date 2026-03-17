@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.8](https://github.com/noetl/gateway/compare/v2.8.7...v2.8.8) (2026-03-17)
+
+### Bug Fixes
+
+* canonical execute payload and add rerun mutation ([a0af700](https://github.com/noetl/gateway/commit/a0af7000037b0f63b717e7ef088da29ccc384702))
+* Update workflows AHM-4252 ([9789fc8](https://github.com/noetl/gateway/commit/9789fc80800197a3e1b39aa1cad3de611f8da5a5))
+
 ## 2.8.7 (2026-03-02)
 
 ### Bug Fixes
