@@ -56,6 +56,7 @@ noetl --gateway catalog list Playbook --json
 
 Gateway endpoints involved:
 - `POST /api/auth/login` for token exchange
+- `GET /api/runtime/contract` for current gateway runtime/proxy contract
 - `POST /noetl/catalog/register` for resource registration
 
 References:

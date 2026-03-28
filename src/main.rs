@@ -13,9 +13,10 @@ use axum::{
     middleware,
     response::Html,
     routing::{delete, get, options, patch, post, put},
-    Router,
+    Json, Router,
 };
 use dotenvy::dotenv;
+use serde_json::{json, Value};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
@@ -187,6 +188,7 @@ async fn main() -> anyhow::Result<()> {
     // Public routes (no auth required)
     let public_routes = Router::new()
         .route("/health", get(health_check))
+        .route("/api/runtime/contract", get(runtime_contract))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/validate", post(auth::validate_session))
         .route("/api/auth/check-access", post(auth::check_access))
@@ -237,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     tracing::info!(%addr, noetl_base = %config.noetl.base_url, "starting gateway server http://localhost:{}", config.server.port);
     tracing::info!("Auth endpoints: POST /api/auth/login, POST /api/auth/validate, POST /api/auth/check-access");
+    tracing::info!("Runtime contract: GET /api/runtime/contract");
     tracing::info!("Internal endpoint: POST /api/internal/callback (for worker callbacks)");
     tracing::info!("SSE endpoint: GET /events?session_token=xxx (real-time callbacks)");
     tracing::info!("Async callback: POST /api/internal/callback/async (for async playbook results)");
@@ -252,6 +255,63 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+async fn runtime_contract() -> Json<Value> {
+    Json(json!({
+        "gateway_version": env!("CARGO_PKG_VERSION"),
+        "contract_version": "2026-03-27",
+        "summary": "Gateway provides authenticated proxy forwarding from /noetl/* to NoETL /api/*.",
+        "routes": {
+            "public": [
+                "GET /health",
+                "GET /api/runtime/contract",
+                "POST /api/auth/login",
+                "POST /api/auth/validate",
+                "POST /api/auth/check-access",
+                "POST /api/internal/callback",
+                "POST /api/internal/callback/async",
+                "POST /api/internal/progress",
+                "GET /events?session_token=..."
+            ],
+            "protected": [
+                "ANY /noetl/{*path}",
+                "POST /graphql",
+                "GET /graphql"
+            ]
+        },
+        "proxy_contract": {
+            "incoming_prefix": "/noetl/",
+            "upstream_prefix": "/api/",
+            "supported_methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            "authentication": {
+                "required": true,
+                "accepted_headers": [
+                    "Authorization: Bearer <session_token>",
+                    "x-session-token: <session_token>"
+                ],
+                "middleware": "auth_middleware"
+            },
+            "forwarded_request_headers": [
+                "Content-Type",
+                "Accept",
+                "x-* custom headers"
+            ],
+            "forwarded_response_headers": [
+                "Content-Type",
+                "Content-Length",
+                "x-* custom headers"
+            ]
+        },
+        "cli_operation_mapping": {
+            "exec": "/noetl/execute",
+            "status": "/noetl/executions/{id}/status",
+            "cancel": "/noetl/executions/{id}/cancel",
+            "catalog_list": "/noetl/catalog/list",
+            "catalog_register": "/noetl/catalog/register",
+            "query": "/noetl/postgres/execute"
+        }
+    }))
 }
 
 async fn graphiql(State(()): State<()>) -> Html<String> {
