@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.9.0](https://github.com/noetl/gateway/compare/v2.8.8...v2.9.0) (2026-03-28)
+
+### Features
+
+* **gateway:** add runtime contract endpoint for cli/ai integration ([d5acf6d](https://github.com/noetl/gateway/commit/d5acf6de4cd0b7a2b1acd0488f38b6d8d2bc3777))
+
 ## [2.8.8](https://github.com/noetl/gateway/compare/v2.8.7...v2.8.8) (2026-03-17)
 
 ### Bug Fixes
