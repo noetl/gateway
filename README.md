@@ -18,8 +18,8 @@ Rust API gateway for authenticated access to NoETL services. Gateway authenticat
 4. Build and push container image (`gateway`).
 5. Deploy and verify:
    - `/health` endpoint returns `200`
-  - upstream proxy routes function with valid auth/session.
-  - `/api/runtime/contract` reports the current `/noetl/*` execution contract.
+   - upstream proxy routes function with valid auth/session.
+   - `/api/runtime/contract` reports the current `/noetl/*` execution contract.
 
 ## Notes
 

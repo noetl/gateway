@@ -53,7 +53,7 @@ impl NoetlClient {
         resource_kind: &str,
     ) -> anyhow::Result<ExecutionResponse> {
         let url = format!("{}/api/execute", self.base_url.trim_end_matches('/'));
-        let payload = ExecutePlaybookRequest::new(path, args, resource_kind);
+        let payload = ExecuteCatalogEntryRequest::new(path, args, resource_kind);
 
         let res = self
             .http
@@ -61,12 +61,17 @@ impl NoetlClient {
             .json(&payload)
             .send()
             .await
-            .context("execute_playbook: send")?;
+            .context("execute_catalog_entry: send")?;
 
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(anyhow::anyhow!("Execute playbook failed: {} - {}", status, body));
+            return Err(anyhow::anyhow!(
+                "Execute catalog entry failed (resource_kind={}): {} - {}",
+                resource_kind,
+                status,
+                body
+            ));
         }
 
         let parsed: ExecutionResponse = serde_json::from_str(&body).context("parse execution response")?;
@@ -227,13 +232,13 @@ impl NoetlClient {
 // Response types
 
 #[derive(Debug, Serialize, Clone)]
-struct ExecutePlaybookRequest {
+struct ExecuteCatalogEntryRequest {
     path: String,
     workload: serde_json::Value,
     resource_kind: String,
 }
 
-impl ExecutePlaybookRequest {
+impl ExecuteCatalogEntryRequest {
     fn new(path: &str, workload: serde_json::Value, resource_kind: &str) -> Self {
         Self {
             path: path.to_string(),

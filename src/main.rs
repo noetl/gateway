@@ -327,6 +327,14 @@ async fn runtime_contract() -> Json<Value> {
             "detail": {
                 "method": "GET",
                 "path": "/noetl/executions/{id}"
+            },
+            "events": {
+                "method": "GET",
+                "path": "/noetl/executions/{id}/events"
+            },
+            "cancel": {
+                "method": "POST",
+                "path": "/noetl/executions/{id}/cancel"
             }
         },
         "agent_contract": {

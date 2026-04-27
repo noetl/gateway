@@ -9,7 +9,7 @@
 //! - rerunExecution mutation (canonical execution rerun flow)
 //! - proxyRequest mutation (generic API proxy for clients preferring GraphQL)
 
-use async_graphql::{Context, EmptySubscription, Json, Object, Result as GqlResult, Schema};
+use async_graphql::{Context, EmptySubscription, Enum, Json, Object, Result as GqlResult, Schema};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -19,6 +19,23 @@ use crate::noetl_client::NoetlClient;
 use crate::request_store::{PendingRequest, RequestStore};
 
 pub type AppSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+enum ExecutableResourceKind {
+    #[graphql(name = "playbook")]
+    Playbook,
+    #[graphql(name = "agent")]
+    Agent,
+}
+
+impl ExecutableResourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Playbook => "playbook",
+            Self::Agent => "agent",
+        }
+    }
+}
 
 // ============================================================================
 // QUERY ROOT
@@ -62,12 +79,13 @@ impl MutationRoot {
         ctx: &Context<'_>,
         #[graphql(desc = "Playbook path")] name: String,
         #[graphql(desc = "Execution variables")] variables: Option<Json<serde_json::Value>>,
-        #[graphql(desc = "Executable catalog resource kind: playbook or agent")] resource_kind: Option<String>,
+        #[graphql(name = "resourceKind", desc = "Executable catalog resource kind: playbook or agent")]
+        resource_kind: Option<ExecutableResourceKind>,
         #[graphql(desc = "Client ID from SSE connection (for async callbacks)")] client_id: Option<String>,
     ) -> GqlResult<ExecuteResult> {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
-        let catalog_kind = resource_kind.as_deref().unwrap_or("playbook");
+        let catalog_kind = resource_kind.unwrap_or(ExecutableResourceKind::Playbook).as_str();
 
         // If client_id is provided, set up async callback
         let request_id = if let Some(cid) = client_id.as_ref() {
