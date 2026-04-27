@@ -41,12 +41,19 @@ impl NoetlClient {
     /// Execute a playbook by path.
     /// POST /api/execute with { path, workload, resource_kind }
     pub async fn execute_playbook(&self, path: &str, args: serde_json::Value) -> anyhow::Result<ExecutionResponse> {
+        self.execute_catalog_entry(path, args, "playbook").await
+    }
+
+    /// Execute an executable catalog entry by path.
+    /// Supported resource kinds include "playbook" and "agent".
+    pub async fn execute_catalog_entry(
+        &self,
+        path: &str,
+        args: serde_json::Value,
+        resource_kind: &str,
+    ) -> anyhow::Result<ExecutionResponse> {
         let url = format!("{}/api/execute", self.base_url.trim_end_matches('/'));
-        let payload = serde_json::json!({
-            "path": path,
-            "workload": args,
-            "resource_kind": "playbook"
-        });
+        let payload = ExecutePlaybookRequest::new(path, args, resource_kind);
 
         let res = self
             .http
@@ -218,6 +225,23 @@ impl NoetlClient {
 }
 
 // Response types
+
+#[derive(Debug, Serialize, Clone)]
+struct ExecutePlaybookRequest {
+    path: String,
+    workload: serde_json::Value,
+    resource_kind: String,
+}
+
+impl ExecutePlaybookRequest {
+    fn new(path: &str, workload: serde_json::Value, resource_kind: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            workload,
+            resource_kind: resource_kind.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 struct AuthSessionValidateResponse {

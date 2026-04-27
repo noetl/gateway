@@ -260,8 +260,8 @@ async fn health_check() -> &'static str {
 async fn runtime_contract() -> Json<Value> {
     Json(json!({
         "gateway_version": env!("CARGO_PKG_VERSION"),
-        "contract_version": "2026-03-27",
-        "summary": "Gateway provides authenticated proxy forwarding from /noetl/* to NoETL /api/*.",
+        "contract_version": "2026-04-26",
+        "summary": "Gateway authenticates clients and forwards canonical NoETL API calls. Agent and MCP activity is executed by NoETL playbooks/workers, not by Gateway.",
         "routes": {
             "public": [
                 "GET /health",
@@ -306,10 +306,35 @@ async fn runtime_contract() -> Json<Value> {
         "cli_operation_mapping": {
             "exec": "/noetl/execute",
             "status": "/noetl/executions/{id}/status",
+            "detail": "/noetl/executions/{id}",
+            "events": "/noetl/executions/{id}/events",
             "cancel": "/noetl/executions/{id}/cancel",
             "catalog_list": "/noetl/catalog/list",
+            "agent_catalog_list": "/noetl/catalog/agents/list",
             "catalog_register": "/noetl/catalog/register",
             "query": "/noetl/postgres/execute"
+        },
+        "execution_contract": {
+            "start": {
+                "method": "POST",
+                "path": "/noetl/execute",
+                "body": "{ path|catalog_id, workload, resource_kind: \"playbook\"|\"agent\" }"
+            },
+            "status": {
+                "method": "GET",
+                "path": "/noetl/executions/{id}/status"
+            },
+            "detail": {
+                "method": "GET",
+                "path": "/noetl/executions/{id}"
+            }
+        },
+        "agent_contract": {
+            "model": "agent-as-playbook",
+            "discovery": "/noetl/catalog/agents/list",
+            "invocation": "/noetl/execute",
+            "state": "/noetl/executions/{id}",
+            "mcp": "MCP servers are reached by NoETL worker tool execution, so activity is captured in NoETL command/event/execution state."
         }
     }))
 }

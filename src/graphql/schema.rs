@@ -62,10 +62,12 @@ impl MutationRoot {
         ctx: &Context<'_>,
         #[graphql(desc = "Playbook path")] name: String,
         #[graphql(desc = "Execution variables")] variables: Option<Json<serde_json::Value>>,
+        #[graphql(desc = "Executable catalog resource kind: playbook or agent")] resource_kind: Option<String>,
         #[graphql(desc = "Client ID from SSE connection (for async callbacks)")] client_id: Option<String>,
     ) -> GqlResult<ExecuteResult> {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
+        let catalog_kind = resource_kind.as_deref().unwrap_or("playbook");
 
         // If client_id is provided, set up async callback
         let request_id = if let Some(cid) = client_id.as_ref() {
@@ -98,7 +100,7 @@ impl MutationRoot {
         };
 
         let result = client
-            .execute_playbook(&name, args)
+            .execute_catalog_entry(&name, args, catalog_kind)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
