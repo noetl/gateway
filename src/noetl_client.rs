@@ -41,12 +41,19 @@ impl NoetlClient {
     /// Execute a playbook by path.
     /// POST /api/execute with { path, workload, resource_kind }
     pub async fn execute_playbook(&self, path: &str, args: serde_json::Value) -> anyhow::Result<ExecutionResponse> {
+        self.execute_catalog_entry(path, args, "playbook").await
+    }
+
+    /// Execute an executable catalog entry by path.
+    /// Supported resource kinds include "playbook" and "agent".
+    pub async fn execute_catalog_entry(
+        &self,
+        path: &str,
+        args: serde_json::Value,
+        resource_kind: &str,
+    ) -> anyhow::Result<ExecutionResponse> {
         let url = format!("{}/api/execute", self.base_url.trim_end_matches('/'));
-        let payload = serde_json::json!({
-            "path": path,
-            "workload": args,
-            "resource_kind": "playbook"
-        });
+        let payload = ExecuteCatalogEntryRequest::new(path, args, resource_kind);
 
         let res = self
             .http
@@ -54,12 +61,17 @@ impl NoetlClient {
             .json(&payload)
             .send()
             .await
-            .context("execute_playbook: send")?;
+            .context("execute_catalog_entry: send")?;
 
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(anyhow::anyhow!("Execute playbook failed: {} - {}", status, body));
+            return Err(anyhow::anyhow!(
+                "Execute catalog entry failed (resource_kind={}): {} - {}",
+                resource_kind,
+                status,
+                body
+            ));
         }
 
         let parsed: ExecutionResponse = serde_json::from_str(&body).context("parse execution response")?;
@@ -218,6 +230,23 @@ impl NoetlClient {
 }
 
 // Response types
+
+#[derive(Debug, Serialize, Clone)]
+struct ExecuteCatalogEntryRequest {
+    path: String,
+    workload: serde_json::Value,
+    resource_kind: String,
+}
+
+impl ExecuteCatalogEntryRequest {
+    fn new(path: &str, workload: serde_json::Value, resource_kind: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            workload,
+            resource_kind: resource_kind.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 struct AuthSessionValidateResponse {

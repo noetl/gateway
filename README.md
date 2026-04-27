@@ -1,6 +1,6 @@
 # NoETL Gateway (`noetl-gateway`)
 
-GraphQL/API gateway for authenticated access to NoETL services.
+Rust API gateway for authenticated access to NoETL services. Gateway authenticates callers and forwards canonical NoETL API requests; it does not execute tools or call MCP servers itself.
 
 ## Distribution Channels
 
@@ -19,6 +19,7 @@ GraphQL/API gateway for authenticated access to NoETL services.
 5. Deploy and verify:
    - `/health` endpoint returns `200`
    - upstream proxy routes function with valid auth/session.
+   - `/api/runtime/contract` reports the current `/noetl/*` execution contract.
 
 ## Notes
 
@@ -58,6 +59,28 @@ Gateway endpoints involved:
 - `POST /api/auth/login` for token exchange
 - `GET /api/runtime/contract` for current gateway runtime/proxy contract
 - `POST /noetl/catalog/register` for resource registration
+
+## Agent and MCP Path
+
+For MCP-backed operations, clients should execute NoETL agent playbooks through Gateway:
+
+```bash
+curl -X POST https://gateway.example.com/noetl/execute \
+  -H "Authorization: Bearer $NOETL_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "automation/agents/kubernetes/runtime",
+    "workload": {
+      "method": "tools/call",
+      "tool": "pods_list_in_namespace",
+      "arguments": { "namespace": "noetl" }
+    },
+    "resource_kind": "agent"
+  }'
+```
+
+The NoETL worker owns the MCP call via `kind: mcp`, so activity is visible in execution detail, events, and reruns.
+The typed GraphQL `executePlaybook` mutation accepts `resourceKind`; pass `agent` for catalog entries registered as agent playbooks.
 
 References:
 - https://noetl.dev/docs/reference/noetl_cli_usage

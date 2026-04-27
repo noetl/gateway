@@ -158,10 +158,7 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
     };
 
     if !body_bytes.is_empty() {
-        // Log request body for debugging
-        if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
-            tracing::debug!(path = %path, body = %body_str, "Proxying request body to NoETL");
-        }
+        tracing::debug!(path = %path, body_bytes = body_bytes.len(), "Proxying request body to NoETL");
         proxy_req = proxy_req.body(body_bytes);
     }
 
