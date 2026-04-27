@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.10.0](https://github.com/noetl/gateway/compare/v2.9.0...v2.10.0) (2026-04-27)
+
+### Features
+
+* align gateway with agent execution contract ([5b5aeb3](https://github.com/noetl/gateway/commit/5b5aeb3cf2b5ffc58e715e28b227cf0188aa2051))
+
+### Bug Fixes
+
+* tighten gateway agent execution contract ([635a4b0](https://github.com/noetl/gateway/commit/635a4b0bb98f829293b860f231ee8ec0d3387dc7))
+
 ## [2.9.0](https://github.com/noetl/gateway/compare/v2.8.8...v2.9.0) (2026-03-28)
 
 ### Features
