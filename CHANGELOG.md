@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.10.1](https://github.com/noetl/gateway/compare/v2.10.0...v2.10.1) (2026-05-14)
+
+### Bug Fixes
+
+* **auth:** fail fast and cancel timed-out auth playbooks ([8c777b8](https://github.com/noetl/gateway/commit/8c777b87fb4095d6e332aeb562b039b0bf01977d))
+
 ## [2.10.0](https://github.com/noetl/gateway/compare/v2.9.0...v2.10.0) (2026-04-27)
 
 ### Features
