@@ -109,7 +109,7 @@ pub struct AuthPlaybooksConfig {
     pub session_db_credential: String,
     /// Access check playbook path (default: "api_integration/auth0/check_playbook_access")
     pub check_access: String,
-    /// Playbook execution timeout in seconds (default: 60)
+    /// Auth playbook timeout in seconds (default: 12)
     pub timeout_secs: u64,
 }
 
@@ -194,7 +194,7 @@ impl Default for AuthPlaybooksConfig {
             validate_session: "api_integration/auth0/auth0_validate_session".to_string(),
             session_db_credential: "pg_auth".to_string(),
             check_access: "api_integration/auth0/check_playbook_access".to_string(),
-            timeout_secs: 60,
+            timeout_secs: 12,
         }
     }
 }

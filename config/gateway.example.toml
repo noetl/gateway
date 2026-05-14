@@ -80,4 +80,4 @@ check_access = "api_integration/auth0/check_playbook_access"
 
 # Playbook execution timeout in seconds
 # Env: AUTH_PLAYBOOK_TIMEOUT_SECS
-timeout_secs = 60
+timeout_secs = 12
