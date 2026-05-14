@@ -34,6 +34,7 @@ pub enum AuthError {
     InvalidCredentialsWithReason(String),
     InvalidSession,
     Unauthorized,
+    AuthBackendUnavailable(String),
     NoetlError(String),
     InternalError(String),
 }
@@ -45,6 +46,7 @@ impl IntoResponse for AuthError {
             AuthError::InvalidCredentialsWithReason(msg) => (StatusCode::UNAUTHORIZED, msg),
             AuthError::InvalidSession => (StatusCode::UNAUTHORIZED, "Invalid or expired session".to_string()),
             AuthError::Unauthorized => (StatusCode::FORBIDDEN, "Unauthorized access".to_string()),
+            AuthError::AuthBackendUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
             AuthError::NoetlError(msg) => (StatusCode::BAD_GATEWAY, msg),
             AuthError::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
@@ -134,6 +136,29 @@ fn extract_callback_error(value: &serde_json::Value) -> Option<String> {
         (true, false) => Some(error.to_string()),
         (false, false) => Some(format!("{}: {}", message, error)),
     }
+}
+
+fn cancel_pending_callback(callbacks: Arc<CallbackManager>, request_id: String) {
+    tokio::spawn(async move { callbacks.cancel(&request_id).await });
+}
+
+fn cancel_auth_execution(noetl: Arc<NoetlClient>, execution_id: String, reason: String) {
+    tokio::spawn(async move {
+        if let Err(error) = noetl.cancel_execution(&execution_id, &reason).await {
+            tracing::warn!(
+                "Failed to cancel auth execution {} after gateway timeout: {}",
+                execution_id,
+                error
+            );
+        }
+    });
+}
+
+fn auth_backend_timeout(operation: &str, timeout_secs: u64) -> AuthError {
+    AuthError::AuthBackendUnavailable(format!(
+        "{} auth playbook did not complete within {}s; auth backend is busy. Please retry.",
+        operation, timeout_secs
+    ))
 }
 
 pub async fn resolve_session_cache_or_db(
@@ -268,18 +293,21 @@ pub async fn login(
 
     let playbook_path = &state.playbook_config.login;
     tracing::debug!("Using login playbook: {}", playbook_path);
+    let timeout_secs = state.playbook_config.timeout_secs;
 
-    let result = state
-        .noetl
-        .execute_playbook(playbook_path, variables)
-        .await
-        .map_err(|e| {
-            // Cancel callback on error
-            let callbacks = state.callbacks.clone();
-            let req_id = request_id.clone();
-            tokio::spawn(async move { callbacks.cancel(&req_id).await });
-            AuthError::NoetlError(format!("Login playbook failed: {}", e))
-        })?;
+    let result = timeout(
+        Duration::from_secs(timeout_secs),
+        state.noetl.execute_playbook(playbook_path, variables),
+    )
+    .await
+    .map_err(|_| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        auth_backend_timeout("Login", timeout_secs)
+    })?
+    .map_err(|e| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        AuthError::NoetlError(format!("Login playbook failed: {}", e))
+    })?;
 
     tracing::info!(
         "Auth login execution_id: {}, request_id: {}",
@@ -288,14 +316,17 @@ pub async fn login(
     );
 
     // Wait for callback with configurable timeout
-    let timeout_secs = state.playbook_config.timeout_secs;
+    let execution_id = result.execution_id.clone();
     let callback_result = timeout(Duration::from_secs(timeout_secs), rx)
         .await
         .map_err(|_| {
-            let callbacks = state.callbacks.clone();
-            let req_id = request_id.clone();
-            tokio::spawn(async move { callbacks.cancel(&req_id).await });
-            AuthError::InternalError("Login playbook timed out".to_string())
+            cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+            cancel_auth_execution(
+                state.noetl.clone(),
+                execution_id.clone(),
+                format!("Gateway login timed out after {}s", timeout_secs),
+            );
+            auth_backend_timeout("Login", timeout_secs)
         })?
         .map_err(|_| AuthError::InternalError("Callback channel closed".to_string()))?;
 
@@ -461,17 +492,21 @@ pub async fn check_access(
 
     let playbook_path = &state.playbook_config.check_access;
     tracing::debug!("Using check_access playbook: {}", playbook_path);
+    let timeout_secs = state.playbook_config.timeout_secs;
 
-    let result = state
-        .noetl
-        .execute_playbook(playbook_path, variables)
-        .await
-        .map_err(|e| {
-            let callbacks = state.callbacks.clone();
-            let req_id = request_id.clone();
-            tokio::spawn(async move { callbacks.cancel(&req_id).await });
-            AuthError::NoetlError(format!("Check access playbook failed: {}", e))
-        })?;
+    let result = timeout(
+        Duration::from_secs(timeout_secs),
+        state.noetl.execute_playbook(playbook_path, variables),
+    )
+    .await
+    .map_err(|_| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        auth_backend_timeout("Check access", timeout_secs)
+    })?
+    .map_err(|e| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        AuthError::NoetlError(format!("Check access playbook failed: {}", e))
+    })?;
 
     tracing::info!(
         "Auth check_access execution_id: {}, request_id: {}",
@@ -480,14 +515,17 @@ pub async fn check_access(
     );
 
     // Wait for callback with configurable timeout
-    let timeout_secs = state.playbook_config.timeout_secs;
+    let execution_id = result.execution_id.clone();
     let callback_result = timeout(Duration::from_secs(timeout_secs), rx)
         .await
         .map_err(|_| {
-            let callbacks = state.callbacks.clone();
-            let req_id = request_id.clone();
-            tokio::spawn(async move { callbacks.cancel(&req_id).await });
-            AuthError::InternalError("Check access playbook timed out".to_string())
+            cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+            cancel_auth_execution(
+                state.noetl.clone(),
+                execution_id.clone(),
+                format!("Gateway check_access timed out after {}s", timeout_secs),
+            );
+            auth_backend_timeout("Check access", timeout_secs)
         })?
         .map_err(|_| AuthError::InternalError("Callback channel closed".to_string()))?;
 

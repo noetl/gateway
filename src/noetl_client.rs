@@ -134,6 +134,36 @@ impl NoetlClient {
         Ok(parsed)
     }
 
+    /// Cancel a running execution and its children.
+    /// POST /api/executions/{id}/cancel with { reason, cascade }
+    pub async fn cancel_execution(&self, execution_id: &str, reason: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/api/executions/{}/cancel",
+            self.base_url.trim_end_matches('/'),
+            execution_id
+        );
+        let payload = serde_json::json!({
+            "reason": reason,
+            "cascade": true,
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("cancel_execution: send")?;
+
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Cancel execution failed: {} - {}", status, body));
+        }
+
+        Ok(())
+    }
+
     /// Generic API call for proxy support.
     /// This allows the GraphQL schema to provide a proxyRequest mutation.
     pub async fn api_call(

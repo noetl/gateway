@@ -30,4 +30,4 @@ auth_playbooks:
   login: "api_integration/auth0/auth0_login"
   validate_session: "api_integration/auth0/auth0_validate_session"
   check_access: "api_integration/auth0/check_playbook_access"
-  timeout_secs: 60
+  timeout_secs: 12
