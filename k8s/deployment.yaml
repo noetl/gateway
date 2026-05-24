@@ -30,3 +30,20 @@ spec:
               value: "nats://nats.default.svc.cluster.local:4222"
             - name: NATS_UPDATES_SUBJECT_PREFIX
               value: "playbooks.executions."
+            - name: GATEWAY_FIRESTORE_CREDENTIALS_PATH
+              value: "/var/run/secrets/firestore/service-account.json"
+            - name: GATEWAY_FIRESTORE_PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-config
+                  key: firestore-project-id
+                  optional: true
+          volumeMounts:
+            - name: firestore-credentials
+              mountPath: /var/run/secrets/firestore
+              readOnly: true
+      volumes:
+        - name: firestore-credentials
+          secret:
+            secretName: gateway-firestore-credentials
+            optional: true

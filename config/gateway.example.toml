@@ -81,3 +81,16 @@ check_access = "api_integration/auth0/check_playbook_access"
 # Playbook execution timeout in seconds
 # Env: AUTH_PLAYBOOK_TIMEOUT_SECS
 timeout_secs = 12
+
+[firestore]
+# Service-account JSON file path mounted as a Kubernetes secret.
+# Env: GATEWAY_FIRESTORE_CREDENTIALS_PATH
+credentials_path = "/var/run/secrets/firestore/service-account.json"
+
+# Firestore project id.
+# Env: GATEWAY_FIRESTORE_PROJECT_ID or GOOGLE_CLOUD_PROJECT
+project_id = "<gcp-project-id>"
+
+# Listener sidecar command.
+# Env: GATEWAY_FIRESTORE_LISTENER_CMD
+listener_command = "/opt/firestore-sidecar/bin/python scripts/firestore_listener.py"

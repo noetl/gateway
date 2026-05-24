@@ -13,7 +13,7 @@ categories = ["web-programming", "api-bindings"]
 axum = { version = "0.8.7" }
 async-graphql = { version = "=7.0.17", features = ["chrono", "uuid"] }
 async-graphql-axum = "=7.0.17"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }

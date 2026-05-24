@@ -257,4 +257,41 @@ impl RequestStore {
 
         results
     }
+
+    /// Get all pending requests for a NoETL execution.
+    /// Note: NATS K/V does not support secondary indexes, so this scans keys.
+    pub async fn get_by_execution(&self, execution_id: &str) -> Vec<(String, PendingRequest)> {
+        let guard = self.store.read().await;
+        let store = match guard.as_ref() {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+
+        let mut results = Vec::new();
+        match store.keys().await {
+            Ok(mut keys) => {
+                use futures::StreamExt;
+                while let Some(key) = keys.next().await {
+                    if let Ok(key) = key {
+                        if let Some(request) = self.get(&key).await {
+                            if request.execution_id == execution_id {
+                                results.push((key, request));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to iterate request store keys: {}", e);
+            }
+        }
+
+        tracing::debug!(
+            "Found {} pending requests for execution_id={}",
+            results.len(),
+            &execution_id[..8.min(execution_id.len())]
+        );
+
+        results
+    }
 }

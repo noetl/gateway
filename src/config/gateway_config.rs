@@ -25,6 +25,8 @@ pub struct GatewayConfig {
     pub auth_playbooks: AuthPlaybooksConfig,
     /// Transport configuration (SSE/WebSocket)
     pub transport: TransportConfig,
+    /// Firestore subscription configuration
+    pub firestore: FirestoreConfig,
 }
 
 /// Server configuration
@@ -87,6 +89,18 @@ pub struct TransportConfig {
     pub connection_timeout_secs: u64,
 }
 
+/// Firestore live subscription configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FirestoreConfig {
+    /// Service account file path mounted outside the repository.
+    pub credentials_path: Option<String>,
+    /// Firestore project id. Falls back to GOOGLE_CLOUD_PROJECT.
+    pub project_id: Option<String>,
+    /// Listener command used by the gateway sidecar adapter.
+    pub listener_command: String,
+}
+
 /// CORS configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,6 +138,7 @@ impl Default for GatewayConfig {
             cors: CorsConfig::default(),
             auth_playbooks: AuthPlaybooksConfig::default(),
             transport: TransportConfig::default(),
+            firestore: FirestoreConfig::default(),
         }
     }
 }
@@ -183,6 +198,16 @@ impl Default for CorsConfig {
                 "http://localhost:3000".to_string(),
             ],
             allow_credentials: true,
+        }
+    }
+}
+
+impl Default for FirestoreConfig {
+    fn default() -> Self {
+        Self {
+            credentials_path: None,
+            project_id: None,
+            listener_command: "python3 scripts/firestore_listener.py".to_string(),
         }
     }
 }
@@ -316,6 +341,25 @@ impl GatewayConfig {
         if let Ok(val) = std::env::var("GATEWAY_CONNECTION_TIMEOUT_SECS") {
             if let Ok(secs) = val.parse() {
                 self.transport.connection_timeout_secs = secs;
+            }
+        }
+
+        // Firestore subscription config
+        if let Ok(val) = std::env::var("GATEWAY_FIRESTORE_CREDENTIALS_PATH") {
+            if !val.trim().is_empty() {
+                self.firestore.credentials_path = Some(val);
+            }
+        }
+        if let Ok(val) =
+            std::env::var("GATEWAY_FIRESTORE_PROJECT_ID").or_else(|_| std::env::var("GOOGLE_CLOUD_PROJECT"))
+        {
+            if !val.trim().is_empty() {
+                self.firestore.project_id = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("GATEWAY_FIRESTORE_LISTENER_CMD") {
+            if !val.trim().is_empty() {
+                self.firestore.listener_command = val;
             }
         }
 
