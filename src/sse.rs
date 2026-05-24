@@ -21,6 +21,7 @@ use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::connection_hub::{ConnectionHub, JsonRpcMessage, SseSender};
+use crate::firestore_subscriptions::FirestoreSubscriptionManager;
 use crate::request_store::{PendingRequest, RequestStore};
 use crate::session_cache::SessionCache;
 
@@ -38,6 +39,7 @@ pub struct SseState {
     pub connection_hub: Arc<ConnectionHub>,
     pub request_store: Arc<RequestStore>,
     pub session_cache: Arc<SessionCache>,
+    pub firestore_subscriptions: Option<Arc<FirestoreSubscriptionManager>>,
     pub heartbeat_interval_secs: u64,
 }
 
@@ -65,6 +67,9 @@ struct ServerInfo {
 struct Capabilities {
     playbooks: bool,
     callbacks: bool,
+    subscriptions: bool,
+    #[serde(rename = "playbookState")]
+    playbook_state: bool,
 }
 
 #[derive(Serialize)]
@@ -154,6 +159,8 @@ pub async fn sse_handler(
         capabilities: Capabilities {
             playbooks: true,
             callbacks: true,
+            subscriptions: state.firestore_subscriptions.is_some(),
+            playbook_state: true,
         },
         pending_requests,
     };
