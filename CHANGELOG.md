@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.11.0](https://github.com/noetl/gateway/compare/v2.10.1...v2.11.0) (2026-05-24)
+
+### Features
+
+* **sse:** firestore subscriptions + playbook/state lifecycle frames ([#11](https://github.com/noetl/gateway/issues/11)) ([03b9684](https://github.com/noetl/gateway/commit/03b968405b6f66f55fe0264b3b958613e16003f4))
+
 ## [2.10.1](https://github.com/noetl/gateway/compare/v2.10.0...v2.10.1) (2026-05-14)
 
 ### Bug Fixes
