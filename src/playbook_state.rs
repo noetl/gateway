@@ -1,8 +1,9 @@
 //! NATS execution lifecycle forwarding for gateway SSE clients.
 
 use async_nats::Client;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use serde_json::Value;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use crate::connection_hub::{ConnectionHub, JsonRpcMessage};
@@ -23,31 +24,66 @@ pub async fn start_playbook_state_listener(
     let prefix = updates_subject_prefix.to_string();
 
     tokio::spawn(async move {
-        while let Some(msg) = subscriber.next().await {
-            let subject = msg.subject.to_string();
-            let execution_id = execution_id_from_subject(&subject, &prefix);
-            let Ok(payload) = serde_json::from_slice::<Value>(&msg.payload) else {
-                tracing::warn!(subject, "Failed to parse lifecycle NATS payload as JSON");
-                continue;
-            };
-            let Some(message) = build_state_message(execution_id.as_deref(), &payload) else {
-                continue;
-            };
-            let Some(execution_id) = message
-                .params
-                .as_ref()
-                .and_then(|params| params.get("execution_id"))
-                .and_then(|value| value.as_str())
-                .map(ToString::to_string)
-            else {
-                continue;
-            };
+        // Wrap the loop so that a panic in message handling is surfaced as an
+        // ERROR log rather than silently killing the task.  Without this,
+        // ``tokio::spawn`` swallows the panic and the subscription appears
+        // alive (the "Subscribing" log fires but nothing follows) while in
+        // fact the task died.
+        let res = AssertUnwindSafe(async move {
+            while let Some(msg) = subscriber.next().await {
+                let subject = msg.subject.to_string();
+                let payload_len = msg.payload.len();
+                // Log every received message so we can confirm delivery.
+                // Frequency is bounded by playbook lifecycle events (not a
+                // poll loop) so INFO is acceptable per agents/rules/logging.md.
+                let preview_len = payload_len.min(200);
+                let preview = String::from_utf8_lossy(&msg.payload[..preview_len]);
+                tracing::info!(
+                    subject = %subject,
+                    payload_bytes = payload_len,
+                    payload_preview = %preview,
+                    "Received execution lifecycle NATS message",
+                );
 
-            for (_, pending) in request_store.get_by_execution(&execution_id).await {
-                let _ = connection_hub.send_to_client(&pending.client_id, message.clone()).await;
+                let execution_id = execution_id_from_subject(&subject, &prefix);
+                let Ok(payload) = serde_json::from_slice::<Value>(&msg.payload) else {
+                    tracing::warn!(subject, "Failed to parse lifecycle NATS payload as JSON");
+                    continue;
+                };
+                let Some(message) = build_state_message(execution_id.as_deref(), &payload) else {
+                    continue;
+                };
+                let Some(execution_id) = message
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("execution_id"))
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string)
+                else {
+                    continue;
+                };
+
+                for (_, pending) in request_store.get_by_execution(&execution_id).await {
+                    let _ = connection_hub.send_to_client(&pending.client_id, message.clone()).await;
+                }
             }
+            tracing::warn!("Execution lifecycle NATS subscription ended");
+        })
+        .catch_unwind()
+        .await;
+
+        if let Err(e) = res {
+            // Attempt to extract a printable panic message.
+            let panic_msg = e
+                .downcast_ref::<&str>()
+                .map(|s| *s)
+                .or_else(|| e.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("<non-string panic payload>");
+            tracing::error!(
+                panic_msg,
+                "Execution lifecycle NATS subscription panicked — subscription is dead"
+            );
         }
-        tracing::warn!("Execution lifecycle NATS subscription ended");
     });
 
     Ok(())
@@ -231,5 +267,68 @@ mod tests {
         // Defensive: ``..`` should yield empty tenant/org/exec; we filter
         // empty exec_id and return None.
         assert!(execution_id_from_subject("noetl.events.t.o..0", "noetl.events.").is_none());
+    }
+
+    /// Regression: ``build_state_message`` must produce a valid
+    /// ``playbook/state`` frame for a synthetic ``playbook.completed``
+    /// envelope — the shape noetl publishes on ``noetl.events.*``.
+    ///
+    /// This test exercises the parser and forwarder without requiring a live
+    /// NATS connection so the regression coverage stays tight even in CI
+    /// environments with no broker.
+    #[test]
+    fn builds_playbook_completed_state_message_from_synthetic_envelope() {
+        let payload = serde_json::json!({
+            "event_type": "playbook.completed",
+            "execution_id": "635758340626186455",
+            "status": "completed",
+            "at": "2026-05-27T15:00:00Z",
+        });
+
+        let msg = build_state_message(None, &payload).expect("should build state message for playbook.completed");
+
+        assert_eq!(msg.method.as_deref(), Some("playbook/state"));
+        let params = msg.params.expect("params present");
+        assert_eq!(params["execution_id"], "635758340626186455");
+        assert_eq!(params["event_type"], "playbook.completed");
+        assert_eq!(params["status"], "completed");
+        assert_eq!(params["at"], "2026-05-27T15:00:00Z");
+        // step_name is absent in this envelope; must be present as JSON null
+        // (serde_json::json! serialises Option::None as null).
+        assert!(params["step_name"].is_null());
+    }
+
+    #[test]
+    fn builds_playbook_failed_state_message_from_synthetic_envelope() {
+        let payload = serde_json::json!({
+            "event_type": "playbook.failed",
+            "execution_id": "999000111222333444",
+            "at": "2026-05-27T15:01:00Z",
+        });
+
+        let msg = build_state_message(None, &payload).expect("should build state message for playbook.failed");
+
+        let params = msg.params.expect("params present");
+        assert_eq!(params["execution_id"], "999000111222333444");
+        assert_eq!(params["status"], "failed");
+    }
+
+    #[test]
+    fn build_state_message_falls_back_to_subject_execution_id_when_payload_has_none() {
+        // The payload lacks ``execution_id``; the subject-derived id is the
+        // fallback.  This mirrors the code path hit when noetl publishes a
+        // lean ``step.exit`` event without an explicit execution_id field.
+        let payload = serde_json::json!({
+            "event_type": "step.exit",
+            "step_name": "some_step",
+            "status": "completed",
+            "at": "2026-05-27T15:02:00Z",
+        });
+
+        let msg = build_state_message(Some("fallback-exec-id"), &payload)
+            .expect("should build state message with fallback exec id");
+
+        let params = msg.params.expect("params present");
+        assert_eq!(params["execution_id"], "fallback-exec-id");
     }
 }
