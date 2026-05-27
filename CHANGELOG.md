@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.11.4](https://github.com/noetl/gateway/compare/v2.11.3...v2.11.4) (2026-05-27)
+
+### Bug Fixes
+
+* **sse:** log INFO when synthetic playbook/state send finds client absent ([#15](https://github.com/noetl/gateway/issues/15)) ([aaf6afb](https://github.com/noetl/gateway/commit/aaf6afbf5015097fabb6204f00669fc9dc3631ed))
+
 ## [2.11.3](https://github.com/noetl/gateway/compare/v2.11.2...v2.11.3) (2026-05-27)
 
 ### Bug Fixes
