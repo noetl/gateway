@@ -412,6 +412,20 @@ pub async fn callback_handler(
             &resolved_execution_id[..8.min(resolved_execution_id.len())],
             state_event_type,
         );
+    } else {
+        // Client not registered or its mpsc sender is already closed.
+        // The SPA's waitForExecutionCompletion(executionId) will never
+        // resolve for this execution — the browser will hang at
+        // "Muno is planning…" until the 15 s SSE-drop grace fires.
+        // This is the fingerprint to grep for in post-incident triage.
+        tracing::info!(
+            "Synthetic playbook/state NOT delivered (client absent): \
+             request_id={}, execution_id={}, client_id={}, event_type={}",
+            &callback.request_id[..8.min(callback.request_id.len())],
+            &resolved_execution_id[..8.min(resolved_execution_id.len())],
+            &pending_request.client_id[..8.min(pending_request.client_id.len())],
+            state_event_type,
+        );
     }
 
     // Send to client
