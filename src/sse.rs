@@ -318,8 +318,51 @@ pub async fn callback_handler(
         }
     };
 
+    // The SPA's ``waitForExecutionCompletion(executionId)`` (see
+    // ``noetl/travel/src/api/noetlClient.ts``) resolves on a
+    // ``playbook/state`` notification whose ``event_type`` is
+    // ``playbook.completed`` / ``playbook.failed`` and whose
+    // ``execution_id`` matches.  That signal is also produced by the
+    // ``playbook_state.rs`` NATS listener when noetl publishes the
+    // matching lifecycle event on ``noetl.events.>``.
+    //
+    // The two signals race.  In production the HTTP callback POST
+    // from the worker consistently arrives first — by ~270ms in the
+    // 2026-05-27 itinerary-planner SPA-hang incident.  Because
+    // ``request_store.remove(&callback.request_id)`` runs at the end
+    // of this handler, the entry that the NATS listener needs in
+    // order to call ``request_store.get_by_execution(...)`` is gone
+    // by the time the lifecycle event arrives.  Result: the SPA
+    // hangs at ``Muno is planning…`` forever even though the worker
+    // succeeded.
+    //
+    // Fix: when the callback fires, also emit a synthetic
+    // ``playbook/state`` notification carrying the same
+    // ``execution_id`` + completion status.  The NATS-derived state
+    // event (when it eventually arrives) is then redundant; the
+    // SPA's lifecycle map keys by ``execution_id`` and a second
+    // delivery is a no-op (see ``handlePlaybookState`` early-return
+    // when ``pending`` is missing).
+    let resolved_execution_id = callback
+        .execution_id
+        .clone()
+        .unwrap_or_else(|| pending_request.execution_id.clone());
+    let failed = callback.status == "FAILED" || callback.error.is_some();
+    let state_event_type = if failed { "playbook.failed" } else { "playbook.completed" };
+    let state_status = if failed { "failed" } else { "completed" };
+    let state_message = JsonRpcMessage::notification(
+        "playbook/state",
+        serde_json::json!({
+            "execution_id": resolved_execution_id,
+            "event_type": state_event_type,
+            "step_name": serde_json::Value::Null,
+            "status": state_status,
+            "at": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
+
     // Build the JSON-RPC notification
-    let message = if callback.status == "FAILED" || callback.error.is_some() {
+    let message = if failed {
         let error = callback.error.unwrap_or(WorkerCallbackError {
             code: Some(crate::connection_hub::error_codes::PLAYBOOK_FAILED),
             message: "Playbook execution failed".to_string(),
@@ -330,7 +373,7 @@ pub async fn callback_handler(
             "playbook/result",
             serde_json::json!({
                 "requestId": callback.request_id,
-                "executionId": callback.execution_id.unwrap_or(pending_request.execution_id),
+                "executionId": resolved_execution_id,
                 "status": "FAILED",
                 "error": {
                     "code": error.code.unwrap_or(crate::connection_hub::error_codes::PLAYBOOK_FAILED),
@@ -344,12 +387,32 @@ pub async fn callback_handler(
             "playbook/result",
             serde_json::json!({
                 "requestId": callback.request_id,
-                "executionId": callback.execution_id.unwrap_or(pending_request.execution_id),
+                "executionId": resolved_execution_id,
                 "status": callback.status,
                 "data": callback.data
             }),
         )
     };
+
+    // Emit the synthetic lifecycle notification first so the SPA's
+    // ``waitForExecutionCompletion(executionId)`` resolves before
+    // the ``playbook/result`` arrives.  Order matters in the SPA:
+    // ``handlePlaybookState`` flips the chat out of the
+    // ``"Muno is planning…"`` state, and ``handlePlaybookResult``
+    // then attaches the widget envelope.
+    let state_sent = state
+        .connection_hub
+        .send_to_client(&pending_request.client_id, state_message)
+        .await
+        .unwrap_or(false);
+    if state_sent {
+        tracing::info!(
+            "Synthetic playbook/state delivered: request_id={}, execution_id={}, event_type={}",
+            &callback.request_id[..8.min(callback.request_id.len())],
+            &resolved_execution_id[..8.min(resolved_execution_id.len())],
+            state_event_type,
+        );
+    }
 
     // Send to client
     let sent = state
