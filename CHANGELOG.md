@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.11.2](https://github.com/noetl/gateway/compare/v2.11.1...v2.11.2) (2026-05-27)
+
+### Bug Fixes
+
+* **playbook_state:** add per-message INFO log + panic surfacing ([#13](https://github.com/noetl/gateway/issues/13)) ([6f9267e](https://github.com/noetl/gateway/commit/6f9267e2c174dd9365092ae1ea3c7a8ff3c91aa8)), closes [#12](https://github.com/noetl/gateway/issues/12) [#120](https://github.com/noetl/gateway/issues/120) [#620](https://github.com/noetl/gateway/issues/620)
+
 ## [2.11.1](https://github.com/noetl/gateway/compare/v2.11.0...v2.11.1) (2026-05-27)
 
 ### Bug Fixes
