@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.11.3](https://github.com/noetl/gateway/compare/v2.11.2...v2.11.3) (2026-05-27)
+
+### Bug Fixes
+
+* **sse:** emit synthetic playbook/state from callback handler ([#14](https://github.com/noetl/gateway/issues/14)) ([3413b8d](https://github.com/noetl/gateway/commit/3413b8d0cdf4a8ce59c77191075b0b42aa667720))
+
 ## [2.11.2](https://github.com/noetl/gateway/compare/v2.11.1...v2.11.2) (2026-05-27)
 
 ### Bug Fixes
