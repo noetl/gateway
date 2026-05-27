@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.11.1](https://github.com/noetl/gateway/compare/v2.11.0...v2.11.1) (2026-05-27)
+
+### Bug Fixes
+
+* **playbook_state:** extract execution_id from noetl.events subject shape ([#12](https://github.com/noetl/gateway/issues/12)) ([5dc2339](https://github.com/noetl/gateway/commit/5dc2339009d8eca817d929cdac2e1a971ca7818f))
+
 ## [2.11.0](https://github.com/noetl/gateway/compare/v2.10.1...v2.11.0) (2026-05-24)
 
 ### Features
