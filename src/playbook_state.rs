@@ -75,9 +75,38 @@ async fn connect_nats(nats_url: &str) -> anyhow::Result<Client> {
 }
 
 fn execution_id_from_subject(subject: &str, prefix: &str) -> Option<String> {
-    subject
-        .strip_prefix(prefix)
-        .and_then(|tail| tail.split('.').next())
+    // The noetl event publisher (see
+    // ``noetl/core/messaging/nats_client.py::subject_for_event``) builds
+    // subjects of the form
+    //
+    //     {subject_prefix}.{tenant_id}.{organization_id}.{execution_id}.{shard}
+    //
+    // with ``subject_prefix`` defaulting to ``noetl.events``.  The gateway
+    // subscribes to ``{NATS_UPDATES_SUBJECT_PREFIX}>`` so the prefix we
+    // strip here MUST be the operator-configured prefix with a trailing
+    // dot (e.g. ``"noetl.events."``).  After stripping it, the tail tokens
+    // are ``{tenant}.{org}.{exec_id}.{shard}``, so the execution id lives
+    // at position 2 (third token), not position 0.
+    //
+    // An earlier shape took position 0 directly.  That worked only with
+    // the legacy ``"playbooks.executions."`` prefix where the subject was
+    // ``{prefix}.{exec_id}.{step}.{event}``, but the noetl publisher does
+    // not publish on that subject — it never has — so the previous
+    // gateway image received zero ``playbook/state`` messages and the SPA
+    // hung at ``Muno is planning…`` indefinitely.  See
+    // ``handoffs/archive/2026-05-27-itinerary-planner-spa-hang/round-01-result.md``
+    // in the ai-meta repo for the full diagnostic.
+    //
+    // ``build_state_message`` below prefers ``payload.execution_id`` over
+    // any subject-derived value, so an empty / malformed subject tail is
+    // a soft failure: this helper returns ``None`` and the payload field
+    // still resolves the id.
+    let tail = subject.strip_prefix(prefix)?;
+    let mut parts = tail.split('.');
+    let _tenant = parts.next()?;
+    let _organization = parts.next()?;
+    parts
+        .next()
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
@@ -149,10 +178,58 @@ mod tests {
     }
 
     #[test]
-    fn parses_execution_id_from_prefixed_subject() {
+    fn parses_execution_id_from_noetl_events_subject() {
+        // noetl event publisher subject shape:
+        // {prefix}.{tenant}.{org}.{exec_id}.{shard}
         assert_eq!(
-            execution_id_from_subject("playbooks.executions.exec-1.step.exit", "playbooks.executions."),
+            execution_id_from_subject(
+                "noetl.events.tenant1.org1.exec-1.0",
+                "noetl.events.",
+            ),
             Some("exec-1".to_string())
         );
+    }
+
+    #[test]
+    fn parses_execution_id_with_none_tenant_org_tokens() {
+        // ``_subject_token`` in nats_client.py emits the literal
+        // ``"none"`` when tenant_id / organization_id are missing from an
+        // event payload.  The subject is well-formed and the extraction
+        // must still produce the exec_id.
+        assert_eq!(
+            execution_id_from_subject(
+                "noetl.events.none.none.635758340626186455.7",
+                "noetl.events.",
+            ),
+            Some("635758340626186455".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_subject_without_prefix() {
+        // Defensive: a stray message published on an unrelated subject
+        // (or with the wrong prefix configured) must not produce an id.
+        assert!(execution_id_from_subject(
+            "playbooks.executions.exec-1.step.exit",
+            "noetl.events.",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn returns_none_for_subject_missing_exec_id_token() {
+        // Subject tail has fewer than the expected 3 tokens
+        // (tenant.org.exec_id) — return None so ``build_state_message``
+        // falls back to ``payload.execution_id``.
+        assert!(execution_id_from_subject("noetl.events.t.o", "noetl.events.").is_none());
+        assert!(execution_id_from_subject("noetl.events.t", "noetl.events.").is_none());
+        assert!(execution_id_from_subject("noetl.events.", "noetl.events.").is_none());
+    }
+
+    #[test]
+    fn returns_none_for_empty_exec_id_token() {
+        // Defensive: ``..`` should yield empty tenant/org/exec; we filter
+        // empty exec_id and return None.
+        assert!(execution_id_from_subject("noetl.events.t.o..0", "noetl.events.").is_none());
     }
 }
