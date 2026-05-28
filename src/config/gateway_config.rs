@@ -27,6 +27,10 @@ pub struct GatewayConfig {
     pub transport: TransportConfig,
     /// Firestore subscription configuration
     pub firestore: FirestoreConfig,
+    /// Auth0 application metadata — purely informational, used
+    /// only to populate the ``auth0`` block of the runtime
+    /// contract endpoint.  See ``Auth0Config`` for the contract.
+    pub auth0: Auth0Config,
 }
 
 /// Server configuration
@@ -111,6 +115,39 @@ pub struct CorsConfig {
     pub allow_credentials: bool,
 }
 
+/// Auth0 application metadata — informational only.
+///
+/// The gateway does **not** use these fields for token validation;
+/// per-request validation reads ``auth0_domain`` from the login
+/// payload and validates against that tenant's JWKS (see
+/// ``src/auth/mod.rs::login_handler``).  These values exist solely
+/// so the gateway's ``GET /api/runtime/contract`` endpoint can tell
+/// the ``noetl`` CLI which Auth0 application the deployed SPA + this
+/// gateway expect operators to authenticate against.  The CLI uses
+/// the contract to bootstrap a context with one command:
+///
+/// ```text
+///   noetl context init <name> --from-gateway https://gateway.example.com
+/// ```
+///
+/// When ``domain`` is empty the runtime contract simply omits the
+/// ``auth0`` block — appropriate for deployments that don't use
+/// Auth0.  Individual fields that are empty are omitted from the
+/// emitted block (e.g. an empty ``audience`` doesn't add an
+/// ``audience: ""`` key).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Auth0Config {
+    /// Auth0 tenant domain (e.g. ``acme.auth0.com``).  Empty ⇒ block omitted.
+    pub domain: String,
+    /// Auth0 application client_id the SPA + CLI authenticate against.
+    pub client_id: String,
+    /// Allowed redirect URI for the SPA / browser login flow.
+    pub redirect_uri: String,
+    /// Optional API audience for access-token grants.
+    pub audience: String,
+}
+
 /// Authentication playbook paths configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -139,6 +176,7 @@ impl Default for GatewayConfig {
             auth_playbooks: AuthPlaybooksConfig::default(),
             transport: TransportConfig::default(),
             firestore: FirestoreConfig::default(),
+            auth0: Auth0Config::default(),
         }
     }
 }
@@ -388,6 +426,22 @@ impl GatewayConfig {
             if let Ok(secs) = val.parse() {
                 self.auth_playbooks.timeout_secs = secs;
             }
+        }
+
+        // Auth0 metadata — see ``Auth0Config`` for the contract.
+        // These are informational; absence is fine (the runtime
+        // contract endpoint just omits the block).
+        if let Ok(val) = std::env::var("GATEWAY_AUTH0_DOMAIN") {
+            self.auth0.domain = val;
+        }
+        if let Ok(val) = std::env::var("GATEWAY_AUTH0_CLIENT_ID") {
+            self.auth0.client_id = val;
+        }
+        if let Ok(val) = std::env::var("GATEWAY_AUTH0_REDIRECT_URI") {
+            self.auth0.redirect_uri = val;
+        }
+        if let Ok(val) = std::env::var("GATEWAY_AUTH0_AUDIENCE") {
+            self.auth0.audience = val;
         }
     }
 
