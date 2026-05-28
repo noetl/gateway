@@ -293,8 +293,56 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
+/// Pure builder for the optional ``auth0`` block of the runtime
+/// contract.  Returns ``None`` when ``domain`` is empty (the whole
+/// block is omitted in that case) and drops individual fields that
+/// are empty so the CLI can tell which pieces of metadata the
+/// deployment actually carries.  Split from the env-reading
+/// ``build_auth0_runtime_block`` so it can be unit-tested without
+/// global state mutation.
+///
+/// See ``Auth0Config`` in ``src/config/gateway_config.rs`` for the
+/// "informational only" contract.
+fn build_auth0_runtime_block_from(
+    domain: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    audience: &str,
+) -> Option<Value> {
+    let domain = domain.trim();
+    if domain.is_empty() {
+        return None;
+    }
+    let mut block = serde_json::Map::new();
+    block.insert("domain".to_string(), Value::String(domain.to_string()));
+    for (value, key) in [
+        (client_id, "client_id"),
+        (redirect_uri, "redirect_uri"),
+        (audience, "audience"),
+    ] {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            block.insert(key.to_string(), Value::String(trimmed.to_string()));
+        }
+    }
+    Some(Value::Object(block))
+}
+
+/// Build the optional ``auth0`` block of the runtime contract from
+/// the gateway's environment.  The ``GATEWAY_AUTH0_*`` env vars are
+/// set by the Helm chart (see noetl/ops `automation/helm/gateway`)
+/// from the operator's chart values.  Thin wrapper around
+/// ``build_auth0_runtime_block_from``.
+fn build_auth0_runtime_block() -> Option<Value> {
+    let domain = std::env::var("GATEWAY_AUTH0_DOMAIN").unwrap_or_default();
+    let client_id = std::env::var("GATEWAY_AUTH0_CLIENT_ID").unwrap_or_default();
+    let redirect_uri = std::env::var("GATEWAY_AUTH0_REDIRECT_URI").unwrap_or_default();
+    let audience = std::env::var("GATEWAY_AUTH0_AUDIENCE").unwrap_or_default();
+    build_auth0_runtime_block_from(&domain, &client_id, &redirect_uri, &audience)
+}
+
 async fn runtime_contract() -> Json<Value> {
-    Json(json!({
+    let mut body = json!({
         "gateway_version": env!("CARGO_PKG_VERSION"),
         "contract_version": "2026-04-26",
         "summary": "Gateway authenticates clients and forwards canonical NoETL API calls. Agent and MCP activity is executed by NoETL playbooks/workers, not by Gateway.",
@@ -380,10 +428,82 @@ async fn runtime_contract() -> Json<Value> {
             "state": "/noetl/executions/{id}",
             "mcp": "MCP servers are reached by NoETL worker tool execution, so activity is captured in NoETL command/event/execution state."
         }
-    }))
+    });
+
+    // Optional ``auth0`` block — surfaced when the Helm chart sets
+    // ``env.auth0Domain`` (which the deployment template maps to
+    // ``GATEWAY_AUTH0_DOMAIN``).  Consumed by ``noetl context init
+    // --from-gateway <url>`` to bootstrap a CLI context with the
+    // right Auth0 application metadata.  See ``Auth0Config`` for
+    // the full contract.
+    if let Some(auth0) = build_auth0_runtime_block() {
+        if let Value::Object(ref mut obj) = body {
+            obj.insert("auth0".to_string(), auth0);
+        }
+    }
+
+    Json(body)
 }
 
 async fn graphiql(State(()): State<()>) -> Html<String> {
     let html = playground_source(async_graphql::http::GraphQLPlaygroundConfig::new("/graphql"));
     Html(html)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth0_block_omitted_when_domain_empty() {
+        // Deployments without Auth0 set domain="" and the runtime
+        // contract simply omits the whole block.
+        assert!(build_auth0_runtime_block_from("", "any-id", "any-uri", "any-aud").is_none());
+        assert!(build_auth0_runtime_block_from("   ", "x", "y", "z").is_none(),
+            "whitespace-only domain should also be treated as absent");
+    }
+
+    #[test]
+    fn auth0_block_includes_only_non_empty_fields() {
+        // domain present + client_id present; redirect_uri and audience
+        // empty are dropped from the emitted block.
+        let block = build_auth0_runtime_block_from(
+            "acme.auth0.com",
+            "abc123",
+            "",
+            "",
+        )
+        .expect("domain present -> block present");
+        let obj = block.as_object().unwrap();
+        assert_eq!(obj.get("domain").and_then(|v| v.as_str()), Some("acme.auth0.com"));
+        assert_eq!(obj.get("client_id").and_then(|v| v.as_str()), Some("abc123"));
+        assert!(obj.get("redirect_uri").is_none(), "empty fields are dropped");
+        assert!(obj.get("audience").is_none());
+    }
+
+    #[test]
+    fn auth0_block_full_carries_every_field() {
+        let block = build_auth0_runtime_block_from(
+            "  acme.auth0.com  ",
+            "  Jqop7YoaiZalLHdBRo5ScNQ1RJhbhbDN  ",
+            "https://travel.example.com/login",
+            "https://api.example.com",
+        )
+        .unwrap();
+        let obj = block.as_object().unwrap();
+        // Values are trimmed before insertion.
+        assert_eq!(obj.get("domain").and_then(|v| v.as_str()), Some("acme.auth0.com"));
+        assert_eq!(
+            obj.get("client_id").and_then(|v| v.as_str()),
+            Some("Jqop7YoaiZalLHdBRo5ScNQ1RJhbhbDN")
+        );
+        assert_eq!(
+            obj.get("redirect_uri").and_then(|v| v.as_str()),
+            Some("https://travel.example.com/login")
+        );
+        assert_eq!(
+            obj.get("audience").and_then(|v| v.as_str()),
+            Some("https://api.example.com")
+        );
+    }
 }
