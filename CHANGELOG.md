@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.12.0](https://github.com/noetl/gateway/compare/v2.11.4...v2.12.0) (2026-05-28)
+
+### Features
+
+* **gateway:** expose Auth0 metadata in runtime contract ([#16](https://github.com/noetl/gateway/issues/16)) ([b988b9f](https://github.com/noetl/gateway/commit/b988b9f39bcc0d4e5ad22fd6b88ec9633d31ed62)), closes [#124](https://github.com/noetl/gateway/issues/124) [#124](https://github.com/noetl/gateway/issues/124)
+
 ## [2.11.4](https://github.com/noetl/gateway/compare/v2.11.3...v2.11.4) (2026-05-27)
 
 ### Bug Fixes
