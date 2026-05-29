@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.14.0](https://github.com/noetl/gateway/compare/v2.13.0...v2.14.0) (2026-05-29)
+
+### Features
+
+* **gateway:** remove direct Firestore subscription subsystem ([#18](https://github.com/noetl/gateway/issues/18)) ([d1b5979](https://github.com/noetl/gateway/commit/d1b59798ce6c329c5124e36ac4d45eecfbce518b)), closes [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23) [noetl/ai-meta#25](https://github.com/noetl/ai-meta/issues/25) [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23) [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23) [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23)
+
 ## [2.13.0](https://github.com/noetl/gateway/compare/v2.12.0...v2.13.0) (2026-05-29)
 
 ### Features
