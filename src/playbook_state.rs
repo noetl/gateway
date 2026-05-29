@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::connection_hub::{ConnectionHub, JsonRpcMessage};
 use crate::request_store::RequestStore;
 
-const FORWARDED_EVENT_TYPES: &[&str] = &["step.exit", "playbook.completed", "playbook.failed"];
+const FORWARDED_EVENT_TYPES: &[&str] = &["step.exit", "playbook.completed", "playbook.failed", "calendar.event.touched"];
 
 pub async fn start_playbook_state_listener(
     nats_url: &str,
