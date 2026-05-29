@@ -24,7 +24,6 @@ mod auth;
 mod callbacks;
 mod config;
 mod connection_hub;
-mod firestore_subscriptions;
 mod graphql;
 mod noetl_client;
 mod playbook_state;
@@ -37,7 +36,6 @@ mod sse;
 use crate::callbacks::CallbackManager;
 use crate::config::GatewayConfig;
 use crate::connection_hub::ConnectionHub;
-use crate::firestore_subscriptions::FirestoreSubscriptionManager;
 use crate::graphql::schema::{AppSchema, MutationRoot, QueryRoot};
 use crate::noetl_client::NoetlClient;
 use crate::proxy::ProxyState;
@@ -139,17 +137,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(%error, "Execution lifecycle SSE forwarding disabled");
     }
 
-    let firestore_subscription_manager = Arc::new(FirestoreSubscriptionManager::new(
-        connection_hub.clone(),
-        config.firestore.clone(),
-    ));
-
     // SSE state for real-time callbacks
     let sse_state = Arc::new(SseState {
         connection_hub: connection_hub.clone(),
         request_store: request_store.clone(),
         session_cache: session_cache.clone(),
-        firestore_subscriptions: Some(firestore_subscription_manager.clone()),
         heartbeat_interval_secs: config.transport.heartbeat_interval_secs,
     });
 
@@ -223,21 +215,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/internal/progress", post(sse::progress_handler))
         .with_state(sse_state.clone());
 
-    let subscription_routes = Router::new()
-        .route(
-            "/api/subscriptions/firestore",
-            post(firestore_subscriptions::create_firestore_subscription),
-        )
-        .route(
-            "/api/subscriptions/{subscription_id}",
-            delete(firestore_subscriptions::delete_subscription),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            auth_state.clone(),
-            auth::middleware::auth_middleware,
-        ))
-        .with_state(sse_state.clone());
-
     // Protected GraphQL routes (auth required)
     let graphql_routes = Router::new()
         .route("/graphql", get(graphiql).post_service(GraphQL::new(schema.clone())))
@@ -267,7 +244,6 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(sse_routes)
-        .merge(subscription_routes)
         .merge(graphql_routes)
         .merge(proxy_routes)
         .layer(cors);
