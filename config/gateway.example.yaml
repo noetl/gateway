@@ -31,11 +31,3 @@ auth_playbooks:
   validate_session: "api_integration/auth0/auth0_validate_session"
   check_access: "api_integration/auth0/check_playbook_access"
   timeout_secs: 12
-
-firestore:
-  # Env: GATEWAY_FIRESTORE_CREDENTIALS_PATH
-  credentials_path: "/var/run/secrets/firestore/service-account.json"
-  # Env: GATEWAY_FIRESTORE_PROJECT_ID or GOOGLE_CLOUD_PROJECT
-  project_id: "<gcp-project-id>"
-  # Env: GATEWAY_FIRESTORE_LISTENER_CMD
-  listener_command: "/opt/firestore-sidecar/bin/python scripts/firestore_listener.py"
