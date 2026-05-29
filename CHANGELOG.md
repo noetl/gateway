@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.13.0](https://github.com/noetl/gateway/compare/v2.12.0...v2.13.0) (2026-05-29)
+
+### Features
+
+* **sse:** forward calendar.event.touched on the gateway event channel ([#17](https://github.com/noetl/gateway/issues/17)) ([a8f863e](https://github.com/noetl/gateway/commit/a8f863eb4e26a12c3e39753cd9fc1582f6a81a69)), closes [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23) [noetl/ai-meta#25](https://github.com/noetl/ai-meta/issues/25) [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23)
+
 ## [2.12.0](https://github.com/noetl/gateway/compare/v2.11.4...v2.12.0) (2026-05-28)
 
 ### Features
