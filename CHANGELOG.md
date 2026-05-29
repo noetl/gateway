@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.14.1](https://github.com/noetl/gateway/compare/v2.14.0...v2.14.1) (2026-05-29)
+
+### Bug Fixes
+
+* **docker:** remove firestore-sidecar venv + orphan config refs after [#18](https://github.com/noetl/gateway/issues/18) ([#19](https://github.com/noetl/gateway/issues/19)) ([ca671ff](https://github.com/noetl/gateway/commit/ca671ff725b55f653f4227fe705fd318286d5b0f)), closes [noetl/ai-meta#26](https://github.com/noetl/ai-meta/issues/26) [noetl/ai-meta#23](https://github.com/noetl/ai-meta/issues/23)
+
 ## [2.14.0](https://github.com/noetl/gateway/compare/v2.13.0...v2.14.0) (2026-05-29)
 
 ### Features
