@@ -20,7 +20,10 @@ use axum::{
 use std::sync::Arc;
 
 use crate::noetl_client::NoetlClient;
-use crate::sharding::{extract_execution_id_from_path, ShardMap};
+use crate::sharding::{
+    extract_execution_id_from_body, extract_execution_id_from_path,
+    path_carries_execution_id_in_body, ShardMap,
+};
 
 /// Shared state for proxy handlers.
 #[derive(Clone)]
@@ -70,23 +73,50 @@ impl ProxyState {
     ///   a parseable `execution_id` (e.g.
     ///   `/noetl/executions/{id}/...`), returns the matching
     ///   shard's `base_url`.
-    /// - Otherwise (sharding configured but path doesn't carry
-    ///   an `execution_id`: `/noetl/execute`, `/noetl/events`
-    ///   pre-R3a-2, etc.), falls back to the default
+    /// - When the shard map is populated AND the path is a
+    ///   body-param route (`/noetl/events`, `/noetl/events/batch`)
+    ///   AND `body_bytes` carries a JSON object with a top-level
+    ///   `execution_id`, returns the matching shard's `base_url`.
+    ///   This is the Phase F R3a-2 path.
+    /// - Otherwise (`/noetl/execute` where the server mints the
+    ///   id; cluster-wide routes like `/noetl/catalog/*`; any
+    ///   route where parsing fails), falls back to the default
     ///   `noetl_base_url`.
-    fn resolve_upstream(&self, path: &str) -> &str {
+    ///
+    /// `body_bytes` is `None` for GET/DELETE (no body to parse)
+    /// and `Some(&[])` or `Some(&[..])` for other methods.  Empty
+    /// slices short-circuit cleanly through
+    /// [`extract_execution_id_from_body`].
+    fn resolve_upstream(&self, path: &str, body_bytes: Option<&[u8]>) -> &str {
         if !self.shard_map.is_configured() {
             return &self.noetl_base_url;
         }
+        // Path-based routing (R3a) — covers
+        // /noetl/executions/{id}/... and /noetl/vars/{id}/...
         if let Some(eid) = extract_execution_id_from_path(path) {
             if let Some(url) = self.shard_map.route(eid) {
                 return url;
             }
         }
-        // Path doesn't carry a parseable execution_id, OR the
-        // shard map didn't yield a match.  Fall back to the
-        // default upstream — this is the safe choice for
-        // R3a-scoped routes (execute, events, events/batch).
+        // Body-based routing (R3a-2) — covers /noetl/events
+        // and /noetl/events/batch.  Gated by the path predicate
+        // so we don't waste cycles parsing JSON for routes that
+        // don't carry execution_id in the body.
+        if path_carries_execution_id_in_body(path) {
+            if let Some(bytes) = body_bytes {
+                if let Some(eid) = extract_execution_id_from_body(bytes) {
+                    if let Some(url) = self.shard_map.route(eid) {
+                        return url;
+                    }
+                }
+            }
+        }
+        // Neither path nor body yielded a parseable id (or the
+        // shard map didn't have a matching entry).  Fall back
+        // to the default upstream — the safe choice for
+        // /noetl/execute (server mints the id), cluster-wide
+        // routes (any shard answers), or malformed bodies (the
+        // server returns 400 once we forward).
         &self.noetl_base_url
     }
 }
@@ -143,22 +173,55 @@ pub async fn proxy_options() -> impl IntoResponse {
 
 /// Core proxy logic that forwards requests to NoETL server.
 async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: Request<Body>) -> Response<Body> {
-    // Phase F R3a: resolve the upstream URL.  When the shard
-    // map is empty (current single-replica deployments), this
-    // returns the default `noetl_base_url` — unchanged from
-    // pre-R3a behavior.  When configured, looks up the shard
-    // for path-based execution_ids.
-    let base = state.resolve_upstream(path).trim_end_matches('/');
+    // Phase F R3a-2: read the body BEFORE choosing the upstream
+    // URL so body-param routes (POST /noetl/events,
+    // /events/batch) can inspect the JSON for `execution_id`.
+    // Split into parts + body so headers stay accessible after
+    // the body is consumed.
+    let (parts, body) = req.into_parts();
+
+    // Get request body for non-GET methods.
+    let body_bytes: Vec<u8> = match method {
+        Method::GET | Method::DELETE => Vec::new(),
+        _ => match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(e) => {
+                tracing::error!("Failed to read request body: {}", e);
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("Failed to read request body"))
+                    .unwrap();
+            }
+        },
+    };
+
+    // Phase F R3a + R3a-2: resolve the upstream URL.  When the
+    // shard map is empty (current single-replica deployments),
+    // returns the default `noetl_base_url`.  When configured,
+    // looks up the shard by:
+    // - R3a: `execution_id` extracted from the path
+    //   (`/noetl/executions/{id}/...`, `/noetl/vars/{id}/...`).
+    // - R3a-2: `execution_id` extracted from the JSON body for
+    //   `events` + `events/batch` routes.
+    // Falls back to default for routes the helpers can't parse
+    // (`/noetl/execute`, cluster-wide reads, malformed bodies).
+    let body_opt: Option<&[u8]> = if body_bytes.is_empty() {
+        None
+    } else {
+        Some(body_bytes.as_slice())
+    };
+    let base = state.resolve_upstream(path, body_opt).trim_end_matches('/');
     let target_url = format!("{}/api/{}", base, path);
 
     // Get query string if present
-    let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
     let full_url = format!("{}{}", target_url, query);
 
     tracing::debug!(
         target_url = %full_url,
         method = %method,
         sharded = state.shard_map.is_configured(),
+        body_param_route = path_carries_execution_id_in_body(path),
         "Proxying request to NoETL"
     );
 
@@ -178,21 +241,21 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
     };
 
     // Forward Content-Type header
-    if let Some(content_type) = req.headers().get(header::CONTENT_TYPE) {
+    if let Some(content_type) = parts.headers.get(header::CONTENT_TYPE) {
         if let Ok(ct) = content_type.to_str() {
             proxy_req = proxy_req.header(header::CONTENT_TYPE, ct);
         }
     }
 
     // Forward Accept header
-    if let Some(accept) = req.headers().get(header::ACCEPT) {
+    if let Some(accept) = parts.headers.get(header::ACCEPT) {
         if let Ok(a) = accept.to_str() {
             proxy_req = proxy_req.header(header::ACCEPT, a);
         }
     }
 
     // Forward custom headers that might be needed
-    for (name, value) in req.headers() {
+    for (name, value) in parts.headers.iter() {
         let name_str = name.as_str().to_lowercase();
         // Forward x-* headers (custom headers from client)
         if name_str.starts_with("x-") {
@@ -201,21 +264,6 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
             }
         }
     }
-
-    // Get request body for non-GET methods
-    let body_bytes = match method {
-        Method::GET | Method::DELETE => vec![],
-        _ => match axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024).await {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                tracing::error!("Failed to read request body: {}", e);
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from("Failed to read request body"))
-                    .unwrap();
-            }
-        },
-    };
 
     if !body_bytes.is_empty() {
         tracing::debug!(path = %path, body_bytes = body_bytes.len(), "Proxying request body to NoETL");

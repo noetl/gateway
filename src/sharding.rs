@@ -258,6 +258,68 @@ pub fn extract_execution_id_from_path(path: &str) -> Option<i64> {
     }
 }
 
+/// Does this proxy path carry `execution_id` inside the JSON
+/// body rather than the URL path?
+///
+/// Phase F R3a-2 covers exactly two routes:
+///
+/// - `POST /noetl/events` — single-event ingest; body has a
+///   top-level `execution_id` field per noetl-server's
+///   `EventRequest` shape ([`repos/server/src/handlers/events.rs`](https://github.com/noetl/server/blob/main/src/handlers/events.rs)).
+/// - `POST /noetl/events/batch` — batched ingest; same
+///   top-level `execution_id` (the batch payload also includes
+///   per-item events, but the `execution_id` they belong to
+///   sits at the envelope level).
+///
+/// Callers use this predicate to gate the body-parse cost;
+/// non-event routes skip the JSON parse and go straight to the
+/// default upstream when path-based routing doesn't find an id.
+///
+/// `path` is the Axum-extracted value (everything after
+/// `/noetl/`).  Leading `/` is tolerated.
+pub fn path_carries_execution_id_in_body(path: &str) -> bool {
+    let path = path.trim_start_matches('/');
+    matches!(path, "events" | "events/batch")
+}
+
+/// Extract `execution_id` from a proxied request's JSON body.
+///
+/// Phase F R3a-2 of [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49).
+/// Used by the proxy when [`path_carries_execution_id_in_body`]
+/// returns `true` — i.e. for `POST /noetl/events` and
+/// `POST /noetl/events/batch`.
+///
+/// **Accepts both wire encodings**:
+///
+/// - **String** (the noetl-server wire shape) — `execution_id`
+///   is serialized as a JSON string carrying the i64 in
+///   decimal, to avoid JSON-number precision loss in browser
+///   clients reading the response.  Parses with `i64::from_str`.
+/// - **Number** — i64 directly.  Accepted for robustness in case
+///   a future producer emits the field as a JSON number.
+///
+/// **Returns `None`** when:
+/// - Body bytes are empty.
+/// - JSON parsing fails.
+/// - `execution_id` field is absent.
+/// - `execution_id` is a string but doesn't parse as i64
+///   (e.g. malformed UUID-style id, future encoding change).
+///
+/// Caller treats `None` as "fall back to default upstream" so
+/// a malformed body doesn't break the request — the server will
+/// reject it with a 400 once the proxy forwards.
+pub fn extract_execution_id_from_body(body_bytes: &[u8]) -> Option<i64> {
+    if body_bytes.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
+    let raw = value.get("execution_id")?;
+    if let Some(s) = raw.as_str() {
+        return s.parse::<i64>().ok();
+    }
+    raw.as_i64()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +606,135 @@ mod tests {
         let expected_shard = shard_for(12345, 2);
         let expected = format!("http://shard-{expected_shard}:8082");
         assert_eq!(url, expected);
+    }
+
+    // ---- path_carries_execution_id_in_body (R3a-2) ------------------
+
+    #[test]
+    fn path_predicate_matches_events_routes() {
+        assert!(path_carries_execution_id_in_body("events"));
+        assert!(path_carries_execution_id_in_body("/events"));
+        assert!(path_carries_execution_id_in_body("events/batch"));
+        assert!(path_carries_execution_id_in_body("/events/batch"));
+    }
+
+    #[test]
+    fn path_predicate_rejects_non_event_routes() {
+        // Path-param routes (R3a covers these via path extraction;
+        // the body predicate is for routes that DON'T put the id
+        // on the path).
+        assert!(!path_carries_execution_id_in_body("executions/123"));
+        assert!(!path_carries_execution_id_in_body("executions/123/status"));
+        assert!(!path_carries_execution_id_in_body("vars/9999"));
+        // Server-mints route — no execution_id anywhere on the
+        // request.
+        assert!(!path_carries_execution_id_in_body("execute"));
+        // Cluster-wide routes — any shard answers.
+        assert!(!path_carries_execution_id_in_body("catalog/list"));
+        assert!(!path_carries_execution_id_in_body("credentials"));
+        // Empty / pathological inputs.
+        assert!(!path_carries_execution_id_in_body(""));
+        assert!(!path_carries_execution_id_in_body("events/"));
+        assert!(!path_carries_execution_id_in_body("events/batch/extra"));
+    }
+
+    // ---- extract_execution_id_from_body (R3a-2) ---------------------
+
+    #[test]
+    fn extract_from_body_with_string_execution_id() {
+        // The noetl-server wire shape — execution_id as JSON string
+        // for browser JSON-number precision.
+        let body = br#"{
+            "execution_id": "320816801799737344",
+            "step": "start",
+            "event_type": "step.enter",
+            "payload": {}
+        }"#;
+        assert_eq!(
+            extract_execution_id_from_body(body),
+            Some(320816801799737344_i64)
+        );
+    }
+
+    #[test]
+    fn extract_from_body_with_number_execution_id() {
+        // Number form — accepted for robustness; small values
+        // round-trip safely in JSON numbers, even though the
+        // canonical wire shape is string.
+        let body = br#"{"execution_id": 12345, "step": "x"}"#;
+        assert_eq!(extract_execution_id_from_body(body), Some(12345_i64));
+    }
+
+    #[test]
+    fn extract_from_body_negative_string() {
+        // Negative i64s — snowflakes don't go negative by
+        // construction, but the parser handles them.
+        let body = br#"{"execution_id": "-42"}"#;
+        assert_eq!(extract_execution_id_from_body(body), Some(-42_i64));
+    }
+
+    #[test]
+    fn extract_from_body_batch_envelope() {
+        // /events/batch wire shape — same top-level
+        // `execution_id` field as the single-event POST, plus
+        // a `worker_id` and an `events` array.
+        let body = br#"{
+            "execution_id": "9999999999",
+            "worker_id": "worker-prod-1",
+            "events": [
+                {"step": "a", "event_type": "step.enter"},
+                {"step": "b", "event_type": "call.done"}
+            ]
+        }"#;
+        assert_eq!(
+            extract_execution_id_from_body(body),
+            Some(9999999999_i64)
+        );
+    }
+
+    #[test]
+    fn extract_from_body_returns_none_when_missing_field() {
+        let body = br#"{"step": "no_eid_here", "event_type": "step.enter"}"#;
+        assert_eq!(extract_execution_id_from_body(body), None);
+    }
+
+    #[test]
+    fn extract_from_body_returns_none_for_non_numeric_string() {
+        let body = br#"{"execution_id": "not-a-number"}"#;
+        assert_eq!(extract_execution_id_from_body(body), None);
+    }
+
+    #[test]
+    fn extract_from_body_returns_none_for_invalid_json() {
+        let body = b"{this is not valid json";
+        assert_eq!(extract_execution_id_from_body(body), None);
+    }
+
+    #[test]
+    fn extract_from_body_returns_none_for_empty_bytes() {
+        assert_eq!(extract_execution_id_from_body(&[]), None);
+    }
+
+    #[test]
+    fn extract_from_body_returns_none_for_array_root() {
+        // Hostile input — top-level JSON array doesn't have an
+        // execution_id field by definition.
+        let body = br#"[{"execution_id": "123"}]"#;
+        assert_eq!(extract_execution_id_from_body(body), None);
+    }
+
+    #[test]
+    fn extract_from_body_ignores_nested_execution_id() {
+        // The field MUST be at the top level — nested ones
+        // belong to inner objects (e.g. a step's context
+        // pointing at its own parent), not the request's
+        // routing target.
+        let body = br#"{
+            "step": "x",
+            "payload": {"execution_id": "99999"},
+            "meta": {"some_other_id": 42}
+        }"#;
+        // No top-level execution_id → None.
+        assert_eq!(extract_execution_id_from_body(body), None);
     }
 }
