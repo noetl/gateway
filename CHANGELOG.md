@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.0](https://github.com/noetl/gateway/compare/v3.0.0...v3.1.0) (2026-06-04)
+
+### Features
+
+* **sharding:** body-param JSON routing for events endpoints (Phase F R3a-2) ([#24](https://github.com/noetl/gateway/issues/24)) ([d92fd5e](https://github.com/noetl/gateway/commit/d92fd5edbd4a93105feba5a509f7011440b3f9ae)), closes [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/gateway#21](https://github.com/noetl/gateway/issues/21) [noetl/gateway#23](https://github.com/noetl/gateway/issues/23) [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/gateway#21](https://github.com/noetl/gateway/issues/21)
+
 ## [3.0.0](https://github.com/noetl/gateway/compare/v2.14.1...v3.0.0) (2026-06-04)
 
 ### ⚠ BREAKING CHANGES
