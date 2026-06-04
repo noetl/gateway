@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.2.0](https://github.com/noetl/gateway/compare/v3.1.0...v3.2.0) (2026-06-04)
+
+### Features
+
+* **sharding:** GET /sharding/preview diagnostic twin endpoint (Phase F R3b-2) ([#26](https://github.com/noetl/gateway/issues/26)) ([d3d4740](https://github.com/noetl/gateway/commit/d3d4740c46a9551f5ad2c401413e253c165184e1)), closes [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/gateway#25](https://github.com/noetl/gateway/issues/25) [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/server#47](https://github.com/noetl/server/issues/47)
+
 ## [3.1.0](https://github.com/noetl/gateway/compare/v3.0.0...v3.1.0) (2026-06-04)
 
 ### Features
