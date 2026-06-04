@@ -1,6 +1,6 @@
 [package]
 name = "noetl-gateway"
-version = "2.9.1"
+version = "2.10.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/noetl/noetl"
@@ -47,6 +47,15 @@ tower-http = { version = "0.6", features = ["cors"] }
 async-nats = "0.38"
 futures = "0.3"
 url = "2"
+
+# Phase F R3a of noetl/ai-meta#49 — shard routing helper in
+# src/sharding.rs.  Must match the version pinned on
+# noetl-server (currently `twox-hash = "1.6"`) so the
+# XxHash64 output stays byte-identical across the gateway and
+# server boundaries.  See the sharding-design page on the
+# noetl/server wiki for the routing key derivation.
+twox-hash = "1.6"
+thiserror = "2.0"
 tokio-stream = "0.1"
 async-stream = "0.3"
 

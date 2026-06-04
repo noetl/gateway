@@ -47,10 +47,34 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NoetlConfig {
-    /// NoETL base URL (default: "http://localhost:8082")
+    /// NoETL base URL (default: "http://localhost:8082").  When
+    /// the `shards` field below is empty (the default), this is
+    /// the URL every proxied request is forwarded to — the
+    /// gateway's existing single-replica behavior.
     pub base_url: String,
     /// Request timeout in seconds (default: 120)
     pub timeout_secs: u64,
+    /// Optional shard map for the noetl-server cluster.  Phase F
+    /// R3a of [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49)
+    /// added this — see `src/sharding.rs` for the routing
+    /// semantics and the [sharding-design](https://github.com/noetl/server/wiki/sharding-design)
+    /// page for the cross-cluster context.
+    ///
+    /// When empty (the default), the gateway forwards every
+    /// request to `base_url` — current single-replica behavior,
+    /// unchanged.  When populated, the gateway routes requests
+    /// carrying an `execution_id` in the path
+    /// (`/noetl/executions/{id}/...`, `/noetl/vars/{id}/...`) to
+    /// the matching shard's `base_url`; requests where the
+    /// `execution_id` is not on the path
+    /// (`POST /noetl/execute`, body-param routes — R3a-2)
+    /// continue to use `base_url`.
+    ///
+    /// Indices MUST be contiguous from 0 to N-1; no duplicates;
+    /// no holes.  Startup panics on a bad shard map (config bug;
+    /// fail fast rather than silently mis-route).
+    #[serde(default)]
+    pub shards: Vec<crate::sharding::ShardEndpoint>,
 }
 
 /// NATS configuration
@@ -181,6 +205,7 @@ impl Default for NoetlConfig {
         Self {
             base_url: "http://localhost:8082".to_string(),
             timeout_secs: 120,
+            shards: Vec::new(),
         }
     }
 }
