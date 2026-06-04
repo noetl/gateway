@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0](https://github.com/noetl/gateway/compare/v2.14.1...v3.0.0) (2026-06-04)
+
+### ⚠ BREAKING CHANGES
+
+* **sharding:** to wire shape or existing routes).
+
+## Wiki update (Rule 2a)
+
+noetl/gateway wiki `configuration` page gains a new "NoETL
+shard map (Phase F R3a)" subsection covering the routes
+covered + not covered by R3a, the TOML config shape, the
+constraints enforced at startup, and the wire-contract
+guarantee with the server-side shard_for().  Ships in
+lockstep per `wiki-maintenance.md` Rule 2a.
+
+### Features
+
+* **sharding:** gateway-side shard routing infrastructure (Phase F R3a) ([#21](https://github.com/noetl/gateway/issues/21)) ([5f6892e](https://github.com/noetl/gateway/commit/5f6892ee41dd9da7293b1d71954008c624f1038a)), closes [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/server#45](https://github.com/noetl/server/issues/45) [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/gateway#20](https://github.com/noetl/gateway/issues/20) [noetl/ai-meta#49](https://github.com/noetl/ai-meta/issues/49) [noetl/server#45](https://github.com/noetl/server/issues/45)
+
 ## [2.14.1](https://github.com/noetl/gateway/compare/v2.14.0...v2.14.1) (2026-05-29)
 
 ### Bug Fixes
