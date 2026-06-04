@@ -320,6 +320,109 @@ pub fn extract_execution_id_from_body(body_bytes: &[u8]) -> Option<i64> {
     raw.as_i64()
 }
 
+// =============================================================
+// Phase F R3b-2 — shard-info diagnostic endpoint
+// =============================================================
+//
+// Twin of noetl-server's `GET /api/runtime/shard-info` route.
+// Computes locally via this gateway's own [`shard_for`] — NOT a
+// proxy passthrough — so the integration test (R3b-3, ops repo)
+// can verify gateway and server agree on the math independently.
+
+use axum::{
+    extract::Query,
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+
+/// Query parameters for `GET /sharding/preview`.
+#[derive(Debug, Deserialize)]
+pub struct ShardPreviewQuery {
+    /// `execution_id` to compute the shard for.  Wire-encoded as
+    /// `String` to match the server twin endpoint
+    /// (`/api/runtime/shard-info`) — both sides accept the same
+    /// input shape so the integration test can issue one set of
+    /// query strings against both.
+    pub execution_id: String,
+    /// Required.  Range `1..=1024` mirrors the server-side
+    /// limits.
+    pub shard_count: u32,
+}
+
+/// Response from `GET /sharding/preview`.
+///
+/// Mirrors the server's `ShardInfoResponse` with `source` set to
+/// `"noetl-gateway"`.  The integration test compares only the
+/// `shard_index` field across sources.
+#[derive(Debug, Serialize)]
+pub struct ShardPreviewResponse {
+    pub execution_id: i64,
+    pub shard_count: u32,
+    pub shard_index: u32,
+    pub source: &'static str,
+    pub hash_function: &'static str,
+    pub seed: u64,
+}
+
+/// `GET /sharding/preview` — drift-guard diagnostic on the
+/// gateway side.
+///
+/// Returns the gateway's `shard_for()` result for the supplied
+/// pair.  Pure math, no auth, no I/O.  Pair with the server
+/// twin at `/api/runtime/shard-info` and the integration test
+/// in noetl/ops (Phase F R3b-3) for the end-to-end drift-guard.
+pub async fn get_shard_preview(
+    Query(params): Query<ShardPreviewQuery>,
+) -> impl IntoResponse {
+    let execution_id: i64 = match params.execution_id.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!(
+                        "execution_id {:?} is not a valid i64",
+                        params.execution_id
+                    ),
+                })),
+            )
+                .into_response();
+        }
+    };
+    if params.shard_count == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "shard_count must be >= 1",
+            })),
+        )
+            .into_response();
+    }
+    if params.shard_count > 1024 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "shard_count {} exceeds practical maximum 1024",
+                    params.shard_count
+                ),
+            })),
+        )
+            .into_response();
+    }
+    let shard_index = shard_for(execution_id, params.shard_count);
+    Json(ShardPreviewResponse {
+        execution_id,
+        shard_count: params.shard_count,
+        shard_index,
+        source: "noetl-gateway",
+        hash_function: "twox_hash::XxHash64",
+        seed: 0,
+    })
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
