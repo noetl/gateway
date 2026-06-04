@@ -31,6 +31,7 @@ mod proxy;
 mod request_store;
 mod result_ext;
 mod session_cache;
+mod sharding;
 mod sse;
 
 use crate::callbacks::CallbackManager;
@@ -153,8 +154,37 @@ async fn main() -> anyhow::Result<()> {
         session_cache: session_cache.clone(),
     });
 
-    // Proxy state for forwarding requests to NoETL
-    let proxy_state = Arc::new(ProxyState::new(config.noetl.base_url.clone()));
+    // Proxy state for forwarding requests to NoETL.  Phase F
+    // R3a of noetl/ai-meta#49: construct an optional ShardMap
+    // from the gateway config's `noetl.shards` table.  Empty
+    // list (the default) → no sharding, gateway forwards every
+    // request to `noetl.base_url` unchanged (current single-
+    // replica behavior).  Populated list → routes path-param
+    // execution_id requests to the matching shard; falls back
+    // to `noetl.base_url` for paths without an execution_id
+    // (e.g. `POST /noetl/execute`).  See `src/sharding.rs`.
+    let shard_map = crate::sharding::ShardMap::from_endpoints(config.noetl.shards.clone())
+        .unwrap_or_else(|e| {
+            panic!(
+                "invalid shard map in gateway config (noetl.shards): {e}.  \
+                 Indices must be contiguous from 0 to N-1 with no duplicates."
+            )
+        });
+    if shard_map.is_configured() {
+        tracing::info!(
+            shard_count = shard_map.shard_count(),
+            "Gateway shard routing configured"
+        );
+    } else {
+        tracing::info!(
+            base_url = %config.noetl.base_url,
+            "Gateway forwarding to single NoETL upstream (no sharding configured)"
+        );
+    }
+    let proxy_state = Arc::new(ProxyState::with_shards(
+        config.noetl.base_url.clone(),
+        shard_map,
+    ));
 
     // Wrap config in Arc for sharing with GraphQL context
     let config_arc = Arc::new(config.clone());
