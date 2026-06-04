@@ -238,6 +238,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/internal/callback", post(auth::internal_callback))
         .with_state(auth_state.clone());
 
+    // Sharding diagnostic — Phase F R3b-2 of noetl/ai-meta#49.
+    // Twin of noetl-server's GET /api/runtime/shard-info.  Public;
+    // pure math; no auth.  Computes locally (NOT a proxy
+    // passthrough) so the integration test in noetl/ops can
+    // verify gateway and server compute the same shard_index
+    // independently.
+    let sharding_diagnostic_routes = Router::new()
+        .route("/sharding/preview", get(crate::sharding::get_shard_preview));
+
     // SSE routes for real-time callbacks (auth via query param)
     let sse_routes = Router::new()
         .route("/events", get(sse::sse_handler))
@@ -273,6 +282,7 @@ async fn main() -> anyhow::Result<()> {
     // Main gateway app
     let app = Router::new()
         .merge(public_routes)
+        .merge(sharding_diagnostic_routes)
         .merge(sse_routes)
         .merge(graphql_routes)
         .merge(proxy_routes)
