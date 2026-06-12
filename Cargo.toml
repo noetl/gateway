@@ -48,6 +48,13 @@ async-nats = "0.38"
 futures = "0.3"
 url = "2"
 
+# Build-fix pin (NOT used directly).  time 0.3.48 (2026-06-12) collides with
+# async-nats 0.38.0's blanket `From<Kind> for Error<Kind>` under rustc 1.92
+# (E0119, HourBase).  Pin the transitive dep to the last good release so a
+# fresh CI / image build stays off 0.3.48.  Mirrors the same pin in
+# noetl-tools 3.7.1+ and noetl-worker.  Revisit when async-nats ships a fix.
+time = "=0.3.47"
+
 # Phase F R3a of noetl/ai-meta#49 — shard routing helper in
 # src/sharding.rs.  Must match the version pinned on
 # noetl-server (currently `twox-hash = "1.6"`) so the
