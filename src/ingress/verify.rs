@@ -514,4 +514,77 @@ lFO21bDlxABcQoPC4GwHh61UrN/dlS9nsZxVz0fH5D/gWj++BLI8EMYFObkkEGHV
         let err = validate_oidc_jwt(&tampered, &test_jwks(), TEST_AUD, TEST_SA).unwrap_err();
         assert_eq!(err.reason, "oidc_bad_signature");
     }
+
+    // ---- LIVE Pub/Sub OIDC validation against the REAL Google JWKS ----
+    //
+    // noetl/ai-meta#91 — the positive signature path against a genuinely
+    // Google-signed token, deferred in Phase 3 for lack of a real one.  Every
+    // test above runs against a self-minted RSA key + an in-memory JWKS (no
+    // network).  This test fetches Google's LIVE signing keys through the same
+    // `fetch_google_jwks` the gateway uses in production and validates a real
+    // OIDC identity token, proving the RS256 path works against Google's actual
+    // public keys — not just a key we control.
+    //
+    // `#[ignore]` because it needs network + a fresh real token; ordinary
+    // `cargo test` and CI skip it.  The token is supplied by env and is NEVER
+    // committed.  Mint a true Pub/Sub-push-shaped token (email = the push SA,
+    // a custom audience) by impersonating the push service account:
+    //
+    //   SA=noetl-subscription-runtime@<project>.iam.gserviceaccount.com
+    //   AUD=https://gw.noetl.example/ingress/billing
+    //   export NOETL_LIVE_OIDC_TOKEN="$(gcloud auth print-identity-token \
+    //     --impersonate-service-account=$SA --audiences=$AUD --include-email)"
+    //   export NOETL_LIVE_OIDC_AUD=$AUD
+    //   export NOETL_LIVE_OIDC_SA=$SA
+    //   cargo test --bin noetl-gateway -- --ignored --nocapture oidc_live
+    //
+    // Driven by noetl/e2e scripts/live_validate_oidc_verify.sh.
+    #[tokio::test]
+    #[ignore = "needs network + a real Google OIDC token in NOETL_LIVE_OIDC_TOKEN"]
+    async fn oidc_live_google_token_against_real_jwks() {
+        let token = std::env::var("NOETL_LIVE_OIDC_TOKEN")
+            .expect("set NOETL_LIVE_OIDC_TOKEN to a real Google-signed OIDC token");
+        let aud =
+            std::env::var("NOETL_LIVE_OIDC_AUD").expect("set NOETL_LIVE_OIDC_AUD to the token's audience");
+        let sa = std::env::var("NOETL_LIVE_OIDC_SA")
+            .expect("set NOETL_LIVE_OIDC_SA to the token's service-account email");
+
+        // Fetch Google's LIVE signing keys via the gateway's own code path.
+        let http = reqwest::Client::new();
+        let jwks = crate::ingress::config::fetch_google_jwks(&http)
+            .await
+            .expect("fetch live Google JWKS");
+        assert!(!jwks.keys.is_empty(), "live Google JWKS came back empty");
+
+        // 1. POSITIVE — real token, real keys, correct aud + SA → verified.
+        validate_oidc_jwt(&token, &jwks, &aud, &sa)
+            .expect("real Google-signed token must verify against the live JWKS");
+
+        // 2. NEGATIVE — wrong audience → rejected (real signature, live JWKS).
+        let err = validate_oidc_jwt(&token, &jwks, "https://wrong.example/ingress/x", &sa)
+            .expect_err("wrong audience must be rejected");
+        assert_eq!(err.reason, "oidc_wrong_audience");
+
+        // 3. NEGATIVE — wrong service-account email → rejected.
+        let err = validate_oidc_jwt(&token, &jwks, &aud, "attacker@evil.iam.gserviceaccount.com")
+            .expect_err("wrong service account must be rejected");
+        assert_eq!(err.reason, "oidc_wrong_sa");
+
+        // 4. NEGATIVE — tampered signature → rejected by the REAL Google key.
+        // Flip a character in the MIDDLE of the signature segment (a full
+        // base64url byte) so the corruption is a valid-base64 wrong signature,
+        // not a malformed final-char bit pattern — that reliably surfaces as an
+        // RSA signature mismatch rather than a base64 decode error.
+        let mut parts: Vec<&str> = token.split('.').collect();
+        let sig = parts[2].to_string();
+        let mid = sig.len() / 2;
+        let ch = &sig[mid..mid + 1];
+        let repl = if ch == "A" { "B" } else { "A" };
+        let flipped = format!("{}{}{}", &sig[..mid], repl, &sig[mid + 1..]);
+        parts[2] = &flipped;
+        let tampered = parts.join(".");
+        let err = validate_oidc_jwt(&tampered, &jwks, &aud, &sa)
+            .expect_err("tampered signature must be rejected by the live Google key");
+        assert_eq!(err.reason, "oidc_bad_signature");
+    }
 }
