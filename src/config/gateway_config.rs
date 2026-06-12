@@ -29,6 +29,13 @@ pub struct GatewayConfig {
     /// only to populate the ``auth0`` block of the runtime
     /// contract endpoint.  See ``Auth0Config`` for the contract.
     pub auth0: Auth0Config,
+    /// Push-ingress (noetl/ai-meta#90 Phase 3).  The service-account bearer
+    /// token the gateway presents to the server's
+    /// ``GET /api/internal/ingress/{listener}`` config endpoint (must match the
+    /// server's ``NOETL_INTERNAL_API_TOKEN``).  ``None`` disables the ingress
+    /// routes — they 503 until configured.
+    #[serde(default)]
+    pub internal_api_token: Option<String>,
 }
 
 /// Server configuration
@@ -186,6 +193,7 @@ impl Default for GatewayConfig {
             auth_playbooks: AuthPlaybooksConfig::default(),
             transport: TransportConfig::default(),
             auth0: Auth0Config::default(),
+            internal_api_token: None,
         }
     }
 }
@@ -423,6 +431,13 @@ impl GatewayConfig {
         }
         if let Ok(val) = std::env::var("GATEWAY_AUTH0_AUDIENCE") {
             self.auth0.audience = val;
+        }
+
+        // Push-ingress service-account token (noetl/ai-meta#90 Phase 3).
+        if let Ok(val) = std::env::var("NOETL_INTERNAL_API_TOKEN") {
+            if !val.trim().is_empty() {
+                self.internal_api_token = Some(val);
+            }
         }
     }
 

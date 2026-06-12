@@ -25,6 +25,7 @@ mod callbacks;
 mod config;
 mod connection_hub;
 mod graphql;
+mod ingress;
 mod noetl_client;
 mod playbook_state;
 mod proxy;
@@ -254,6 +255,35 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/internal/progress", post(sse::progress_handler))
         .with_state(sse_state.clone());
 
+    // Push-ingress routes (noetl/ai-meta#90 Phase 3) + the gateway's first
+    // /metrics surface.  POST /ingress/{listener} terminates untrusted
+    // push/webhook traffic: verify (HMAC / bearer / Pub-Sub OIDC) then —
+    // only on success — apply directives + forward one POST /api/execute per
+    // delivery.  No session auth (a source, not a user); the auth IS the
+    // per-delivery signature/token (RFC §6).
+    let ingress_registry = Arc::new(prometheus::Registry::new());
+    let ingress_metrics = ingress::IngressMetrics::register(&ingress_registry)
+        .log("Failed to register ingress metrics")?;
+    let ingress_routes = if let Some(token) = config.internal_api_token.clone() {
+        let ingress_state = Arc::new(ingress::IngressState::new(
+            config.noetl.base_url.clone(),
+            token,
+            ingress_metrics,
+        ));
+        tracing::info!("Push-ingress enabled: POST /ingress/{{listener}} (verify → forward)");
+        Router::new()
+            .route("/ingress/{listener}", post(ingress::push_ingress))
+            .with_state(ingress_state)
+    } else {
+        tracing::warn!(
+            "Push-ingress disabled: NOETL_INTERNAL_API_TOKEN unset — /ingress/{{listener}} returns 503"
+        );
+        Router::new().route("/ingress/{listener}", post(ingress_disabled))
+    };
+    let metrics_routes = Router::new()
+        .route("/metrics", get(ingress::metrics_handler))
+        .with_state(ingress_registry);
+
     // Protected GraphQL routes (auth required)
     let graphql_routes = Router::new()
         .route("/graphql", get(graphiql).post_service(GraphQL::new(schema.clone())))
@@ -284,6 +314,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(public_routes)
         .merge(sharding_diagnostic_routes)
         .merge(sse_routes)
+        .merge(ingress_routes)
+        .merge(metrics_routes)
         .merge(graphql_routes)
         .merge(proxy_routes)
         .layer(cors);
@@ -307,6 +339,16 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+/// Fallback for `/ingress/{listener}` when push-ingress is not configured
+/// (`NOETL_INTERNAL_API_TOKEN` unset).  503 — no permissive default for a
+/// privileged forward surface (noetl/ai-meta#90 Phase 3).
+async fn ingress_disabled() -> (axum::http::StatusCode, &'static str) {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "push-ingress not configured (NOETL_INTERNAL_API_TOKEN unset)",
+    )
 }
 
 /// Pure builder for the optional ``auth0`` block of the runtime
