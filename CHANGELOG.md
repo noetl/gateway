@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.3.0](https://github.com/noetl/gateway/compare/v3.2.0...v3.3.0) (2026-06-12)
+
+### Features
+
+* push-ingress (Mode C) /ingress/{listener} + auth-gated directive trust ([#90](https://github.com/noetl/gateway/issues/90) Phase 3) ([#28](https://github.com/noetl/gateway/issues/28)) ([942022b](https://github.com/noetl/gateway/commit/942022b2952f4de329fa3a8f46249ea484c68b1a)), closes [noetl/gateway#27](https://github.com/noetl/gateway/issues/27)
+
 ## [3.2.0](https://github.com/noetl/gateway/compare/v3.1.0...v3.2.0) (2026-06-04)
 
 ### Features
