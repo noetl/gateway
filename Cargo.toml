@@ -66,6 +66,13 @@ serde_yaml = "0.9"
 # Push-ingress (noetl/ai-meta#90 Phase 3) — webhook/Pub-Sub verification +
 # directive engine + metrics.  All lean (no C deps): the gateway stays a
 # verify-and-forward gatekeeper.
+#
+# The header-directive engine is the shared, lean `noetl-directives` crate
+# (noetl/ai-meta#92) — the same security-sensitive allowlist the worker/tools
+# runtime uses, with ONE implementation.  It is serde-only (no duckdb/kube/
+# tokio), so the internet-facing edge stays lean; this de-vendors the former
+# `src/ingress/directives.rs` serde-only copy.
+noetl-directives = "0.1"
 hmac = "0.12"               # HMAC-SHA256 webhook signature verification
 sha2 = "0.10"
 subtle = "2.5"              # constant-time secret comparison
@@ -73,3 +80,4 @@ hex = "0.4"                 # hex-encode the HMAC digest
 base64 = "0.22"             # decode Pub/Sub push message.data
 jsonwebtoken = "9"          # Google Pub/Sub OIDC (RS256 JWT) verification
 prometheus = "0.13"         # /metrics surface for the ingress counters
+
