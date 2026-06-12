@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.0](https://github.com/noetl/gateway/compare/v3.3.0...v3.4.0) (2026-06-12)
+
+### Features
+
+* de-vendor the directive engine onto shared noetl-directives crate ([c29fafe](https://github.com/noetl/gateway/commit/c29fafe742c99598be233d3964f200cd81ba7f49)), closes [noetl/ai-meta#92](https://github.com/noetl/ai-meta/issues/92)
+
 ## [3.3.0](https://github.com/noetl/gateway/compare/v3.2.0...v3.3.0) (2026-06-12)
 
 ### Features
