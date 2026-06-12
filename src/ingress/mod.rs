@@ -27,7 +27,6 @@
 //! ```
 
 mod config;
-mod directives;
 mod verify;
 
 use std::collections::HashMap;
@@ -46,7 +45,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use config::{fetch_google_jwks, fetch_ingress_config, IngressConfig};
-use directives::{normalize_http_headers, DirectiveSpec, DispatchPlan};
+use noetl_directives::{normalize_http_headers, DirectiveSpec, DispatchPlan};
 use verify::Jwks;
 
 /// HTTP headers that must never leak into the forwarded execution workload /
@@ -536,7 +535,7 @@ async fn post_execute(
     playbook: &str,
     payload: Value,
     pool: Option<&str>,
-    trace: Option<&directives::TraceContext>,
+    trace: Option<&noetl_directives::TraceContext>,
     parent: Option<i64>,
 ) -> anyhow::Result<String> {
     let mut body = serde_json::Map::new();

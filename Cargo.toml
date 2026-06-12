@@ -48,6 +48,13 @@ async-nats = "0.38"
 futures = "0.3"
 url = "2"
 
+# Build-fix pin (NOT used directly).  time 0.3.48 (2026-06-12) collides with
+# async-nats 0.38.0's blanket `From<Kind> for Error<Kind>` under rustc 1.92
+# (E0119, HourBase).  Pin the transitive dep to the last good release so a
+# fresh CI / image build stays off 0.3.48.  Mirrors the same pin in
+# noetl-tools 3.7.1+ and noetl-worker.  Revisit when async-nats ships a fix.
+time = "=0.3.47"
+
 # Phase F R3a of noetl/ai-meta#49 — shard routing helper in
 # src/sharding.rs.  Must match the version pinned on
 # noetl-server (currently `twox-hash = "1.6"`) so the
@@ -66,6 +73,13 @@ serde_yaml = "0.9"
 # Push-ingress (noetl/ai-meta#90 Phase 3) — webhook/Pub-Sub verification +
 # directive engine + metrics.  All lean (no C deps): the gateway stays a
 # verify-and-forward gatekeeper.
+#
+# The header-directive engine is the shared, lean `noetl-directives` crate
+# (noetl/ai-meta#92) — the same security-sensitive allowlist the worker/tools
+# runtime uses, with ONE implementation.  It is serde-only (no duckdb/kube/
+# tokio), so the internet-facing edge stays lean; this de-vendors the former
+# `src/ingress/directives.rs` serde-only copy.
+noetl-directives = "0.1"
 hmac = "0.12"               # HMAC-SHA256 webhook signature verification
 sha2 = "0.10"
 subtle = "2.5"              # constant-time secret comparison
@@ -73,3 +87,4 @@ hex = "0.4"                 # hex-encode the HMAC digest
 base64 = "0.22"             # decode Pub/Sub push message.data
 jsonwebtoken = "9"          # Google Pub/Sub OIDC (RS256 JWT) verification
 prometheus = "0.13"         # /metrics surface for the ingress counters
+

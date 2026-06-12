@@ -1537,6 +1537,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "noetl-directives"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbc7148910450b0bcf3151481828f43d23ed7b20b75d5171761b6edf2748a2ca"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "noetl-gateway"
 version = "3.2.0"
 dependencies = [
@@ -1556,6 +1567,7 @@ dependencies = [
  "hex",
  "hmac",
  "jsonwebtoken",
+ "noetl-directives",
  "once_cell",
  "prometheus",
  "reqwest",
@@ -1567,6 +1579,7 @@ dependencies = [
  "sqlx",
  "subtle",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-stream",
  "toml",
