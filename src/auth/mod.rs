@@ -13,7 +13,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::callbacks::CallbackManager;
 use crate::config::AuthPlaybooksConfig;
-use crate::noetl_client::NoetlClient;
+use crate::noetl_client::{NoetlClient, ValidatedSession};
 use crate::session_cache::SessionCache;
 
 /// Combined state for auth handlers
@@ -161,6 +161,139 @@ fn auth_backend_timeout(operation: &str, timeout_secs: u64) -> AuthError {
     ))
 }
 
+/// Whether cache-missed sessions are validated by executing the
+/// ``auth0_validate_session`` playbook (default) instead of the legacy
+/// ``POST /api/auth/session/validate`` REST call.
+///
+/// The legacy REST route only existed on the retired Python server; the Rust
+/// control plane has no ``/api/auth`` routes, so the REST path 404s in
+/// production.  The playbook path mirrors the live ``check_access`` flow
+/// (execute a catalog playbook, receive ``{valid, user, expires_at}`` via the
+/// worker NATS callback).  Set ``GATEWAY_SESSION_VALIDATE_VIA_PLAYBOOK=false``
+/// to fall back to the legacy REST path.
+fn session_validate_via_playbook_enabled() -> bool {
+    std::env::var("GATEWAY_SESSION_VALIDATE_VIA_PLAYBOOK")
+        .map(|v| !(v == "false" || v == "0"))
+        .unwrap_or(true)
+}
+
+/// Validate a session token by executing the configured ``validate_session``
+/// playbook through the worker pool and consuming the ``{valid, user,
+/// expires_at}`` callback.  Mirrors [`check_access`]'s execute-playbook-via-NATS
+/// callback mechanism.
+async fn validate_session_via_playbook(
+    state: &AuthState,
+    session_token: &str,
+) -> Result<Option<ValidatedSession>, AuthError> {
+    // Register callback to receive result via NATS
+    let (request_id, nats_subject, rx) = state.callbacks.register().await;
+
+    let variables = serde_json::json!({
+        "session_token": session_token,
+        "db_credential": state.playbook_config.session_db_credential,
+        "callback_subject": nats_subject,
+        "request_id": request_id.clone(),
+    });
+
+    let playbook_path = &state.playbook_config.validate_session;
+    tracing::debug!("Using validate_session playbook: {}", playbook_path);
+    let timeout_secs = state.playbook_config.timeout_secs;
+
+    let result = timeout(
+        Duration::from_secs(timeout_secs),
+        state.noetl.execute_playbook(playbook_path, variables),
+    )
+    .await
+    .map_err(|_| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        auth_backend_timeout("Validate session", timeout_secs)
+    })?
+    .map_err(|e| {
+        cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+        AuthError::NoetlError(format!("Validate session playbook failed: {}", e))
+    })?;
+
+    tracing::info!(
+        "Auth validate_session execution_id: {}, request_id: {}",
+        result.execution_id,
+        request_id
+    );
+
+    // Wait for callback with configurable timeout
+    let execution_id = result.execution_id.clone();
+    let callback_result = timeout(Duration::from_secs(timeout_secs), rx)
+        .await
+        .map_err(|_| {
+            cancel_pending_callback(state.callbacks.clone(), request_id.clone());
+            cancel_auth_execution(
+                state.noetl.clone(),
+                execution_id.clone(),
+                format!("Gateway validate_session timed out after {}s", timeout_secs),
+            );
+            auth_backend_timeout("Validate session", timeout_secs)
+        })?
+        .map_err(|_| AuthError::InternalError("Callback channel closed".to_string()))?;
+
+    let output = callback_result.data;
+
+    // A non-success callback status means the playbook itself errored (e.g. DB
+    // lookup failure).  Treat as "could not validate" rather than "invalid".
+    if callback_result.status != "success" {
+        let reason = extract_callback_error(&output)
+            .unwrap_or_else(|| format!("validate_session callback status: {}", callback_result.status));
+        tracing::warn!(
+            "Validate session playbook returned non-success for request_id={}: {}",
+            request_id,
+            reason
+        );
+        return Ok(None);
+    }
+
+    let valid = output.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !valid {
+        return Ok(None);
+    }
+
+    let user_obj = match output.get("user") {
+        Some(u) => u,
+        None => {
+            tracing::warn!("validate_session callback valid=true but missing user payload");
+            return Ok(None);
+        }
+    };
+
+    // user_id may arrive as a number or a stringified number (Jinja templates).
+    let user_id = user_obj
+        .get("user_id")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+        .unwrap_or(0) as i32;
+    let email = user_obj
+        .get("email")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let display_name = user_obj
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| email.clone());
+    let roles = parse_roles(user_obj.get("roles"));
+
+    let expires_at = output
+        .get("expires_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(Some(ValidatedSession {
+        user_id,
+        email,
+        display_name,
+        expires_at,
+        roles,
+    }))
+}
+
 pub async fn resolve_session_cache_or_db(
     state: &AuthState,
     session_token: &str,
@@ -169,17 +302,24 @@ pub async fn resolve_session_cache_or_db(
         return Ok(Some(cached));
     }
 
-    let db_credential = &state.playbook_config.session_db_credential;
-    tracing::debug!(
-        "Session cache miss, validating via auth API (credential={})",
-        db_credential
-    );
-
-    let validated = state
-        .noetl
-        .validate_session_via_api(session_token, db_credential)
-        .await
-        .map_err(|e| AuthError::NoetlError(format!("Session validation API failed: {}", e)))?;
+    let validated = if session_validate_via_playbook_enabled() {
+        tracing::debug!(
+            "Session cache miss, validating via auth playbook ({})",
+            state.playbook_config.validate_session
+        );
+        validate_session_via_playbook(state, session_token).await?
+    } else {
+        let db_credential = &state.playbook_config.session_db_credential;
+        tracing::debug!(
+            "Session cache miss, validating via legacy auth API (credential={})",
+            db_credential
+        );
+        state
+            .noetl
+            .validate_session_via_api(session_token, db_credential)
+            .await
+            .map_err(|e| AuthError::NoetlError(format!("Session validation API failed: {}", e)))?
+    };
 
     match validated {
         Some(found) => {
