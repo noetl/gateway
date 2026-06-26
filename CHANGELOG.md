@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.1](https://github.com/noetl/gateway/compare/v3.4.0...v3.4.1) (2026-06-26)
+
+### Bug Fixes
+
+* **auth:** validate cache-missed sessions via auth0_validate_session playbook ([#31](https://github.com/noetl/gateway/issues/31)) ([c752eb2](https://github.com/noetl/gateway/commit/c752eb2751f5bc5b87a98e3256bb26544a276548))
+
 ## [3.4.0](https://github.com/noetl/gateway/compare/v3.3.0...v3.4.0) (2026-06-12)
 
 ### Features
