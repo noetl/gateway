@@ -177,6 +177,60 @@ fn session_validate_via_playbook_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Whether the synchronous in-process auth fast-path (noetl/ai-meta#167) is
+/// enabled.
+///
+/// The recurring Muno login lockout (`Gateway auth request timed out after
+/// 15s`) has one structural cause: `auth0_login` / `auth0_validate_session` run
+/// as a **multi-hop off-server orchestration drive** on the system worker pool,
+/// where each hop can fall to the server's ~8s reconcile tick under load
+/// (noetl/ai-meta#130 / #156).  Two slow hops blow the gateway's hard ~15s auth
+/// deadline even though the drive completes ~24-38s later.  Session validation,
+/// though, is a plain session-store lookup that never needed to run as a
+/// deadline-gated distributed workflow.
+///
+/// When this flag is `true`, the gateway validates sessions (and logs in) by
+/// calling the server's synchronous `/api/auth/*` endpoints — a direct auth-DB
+/// lookup that returns in milliseconds regardless of the drive state, so a
+/// wedged/paused system-pool (NATS bounce, OOM, index churn) can no longer lock
+/// users out.  The validation *decisions* are identical to the playbook path
+/// (same SQL, same token/expiry checks); only the execution shape changes.
+///
+/// Default OFF — today's playbook-drive behaviour, so flipping the flag is the
+/// whole rollout and reverting it is the whole rollback.  Takes precedence over
+/// [`session_validate_via_playbook_enabled`] for the validate path.
+fn auth_sync_enabled() -> bool {
+    std::env::var("NOETL_AUTH_SYNC")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
+/// Whether the synchronous in-process **authorization** gate (noetl/ai-meta#168)
+/// is enabled.
+///
+/// The per-turn access gate (`check_playbook_access`) has the same structural
+/// fragility login had: it authorizes the user for the target playbook before
+/// the planner runs, and today it executes as a multi-hop off-server drive
+/// (~7s under load).  Stacked in front of the planner turn it blows the
+/// SPA/gateway request budget and the turn is dropped before the planner
+/// execution is even created → the SPA shows "Load failed" with no execution.
+/// The authorization decision, though, is a plain auth-DB lookup (session row +
+/// role/grant rows) that never needed a deadline-gated distributed workflow.
+///
+/// This is a **sibling** of [`auth_sync_enabled`] rather than the same flag on
+/// purpose: login/validate sync (`NOETL_AUTH_SYNC`) is already live in prod, so
+/// a shared flag would activate authz-sync the instant the new image rolls,
+/// forfeiting the gated "deploy neutral → verify → flip" rollout and
+/// independent rollback.  With its own flag the authz gate ships inert
+/// (byte-identical to today's drive path), is flipped on independently, and
+/// rolls back with `NOETL_AUTHZ_SYNC=false` without disturbing login.  Default
+/// OFF.
+fn authz_sync_enabled() -> bool {
+    std::env::var("NOETL_AUTHZ_SYNC")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
 /// Validate a session token by executing the configured ``validate_session``
 /// playbook through the worker pool and consuming the ``{valid, user,
 /// expires_at}`` callback.  Mirrors [`check_access`]'s execute-playbook-via-NATS
@@ -302,7 +356,22 @@ pub async fn resolve_session_cache_or_db(
         return Ok(Some(cached));
     }
 
-    let validated = if session_validate_via_playbook_enabled() {
+    let validated = if auth_sync_enabled() {
+        // noetl/ai-meta#167: synchronous in-process validation via the server
+        // auth fast-path — a direct auth-DB lookup, immune to the off-server
+        // drive's per-hop reconcile floor and drive-wedge class.  Same
+        // valid/invalid decisions as the playbook, just not deadline-gated.
+        let db_credential = &state.playbook_config.session_db_credential;
+        tracing::debug!(
+            "Session cache miss, validating via sync auth fast-path (credential={})",
+            db_credential
+        );
+        state
+            .noetl
+            .validate_session_via_api(session_token, db_credential)
+            .await
+            .map_err(|e| AuthError::NoetlError(format!("Session validation (sync) failed: {}", e)))?
+    } else if session_validate_via_playbook_enabled() {
         tracing::debug!(
             "Session cache miss, validating via auth playbook ({})",
             state.playbook_config.validate_session
@@ -410,6 +479,24 @@ pub async fn login(
         .unwrap_or_else(|| "mestumre-development.us.auth0.com".to_string());
     tracing::info!("Auth login request for domain: {}", auth0_domain);
 
+    // noetl/ai-meta#167 synchronous fast-path: authenticate in-process via the
+    // server's `/api/auth/login` (JWT-claims decode + the same session-creation
+    // SQL the playbook runs) instead of dispatching the multi-hop off-server
+    // drive that the hard ~15s auth deadline could outrun under load.  Same
+    // authenticated/rejected decisions; only the execution shape changes.
+    if auth_sync_enabled() {
+        let client_ip = req.client_ip.unwrap_or_else(|| "0.0.0.0".to_string());
+        let credential = state.playbook_config.session_db_credential.clone();
+        let (callback_status, output) = state
+            .noetl
+            .login_via_api(&req.auth0_token, &auth0_domain, &client_ip, &credential)
+            .await
+            .map_err(|e| AuthError::NoetlError(format!("Login (sync) failed: {}", e)))?;
+        return finish_login(state.as_ref(), &callback_status, &output)
+            .await
+            .map(Json);
+    }
+
     // Register callback to receive result via NATS
     let (request_id, nats_subject, rx) = state.callbacks.register().await;
     tracing::debug!(
@@ -477,15 +564,33 @@ pub async fn login(
         callback_data_keys(&callback_result.data)
     );
 
-    // Extract output from callback data
-    let output = callback_result.data;
+    // Both the drive-callback path (here) and the #167 sync path share the same
+    // output → LoginResponse parsing + session-caching tail.
+    finish_login(state.as_ref(), &callback_result.status, &callback_result.data)
+        .await
+        .map(Json)
+}
 
-    if callback_result.status != "success" {
-        let reason = extract_callback_error(&output).unwrap_or_else(|| "Invalid credentials".to_string());
+/// Turn an auth-login result envelope (`callback_status` + `output` payload)
+/// into a [`LoginResponse`], caching the session on success.
+///
+/// The envelope shape is identical whether it arrived as the `auth0_login`
+/// playbook's `/api/internal/callback` body (drive path) or the server's
+/// synchronous `/api/auth/login` response (noetl/ai-meta#167 fast-path):
+/// `callback_status == "success"` with `output.status == "authenticated"` on a
+/// good login, otherwise an error envelope whose reason is surfaced as
+/// `InvalidCredentialsWithReason`.  Keeping one implementation guarantees the
+/// two paths make byte-identical auth decisions.
+async fn finish_login(
+    state: &AuthState,
+    callback_status: &str,
+    output: &serde_json::Value,
+) -> Result<LoginResponse, AuthError> {
+    if callback_status != "success" {
+        let reason = extract_callback_error(output).unwrap_or_else(|| "Invalid credentials".to_string());
         tracing::warn!(
-            "Auth login failed for request_id={} status={} reason={}",
-            request_id,
-            callback_result.status,
+            "Auth login failed status={} reason={}",
+            callback_status,
             reason
         );
         return Err(AuthError::InvalidCredentialsWithReason(reason));
@@ -498,13 +603,8 @@ pub async fn login(
 
     if status_str != "authenticated" {
         let reason =
-            extract_callback_error(&output).unwrap_or_else(|| format!("Authentication status: {}", status_str));
-        tracing::warn!(
-            "Auth login rejected for request_id={} status={} reason={}",
-            request_id,
-            status_str,
-            reason
-        );
+            extract_callback_error(output).unwrap_or_else(|| format!("Authentication status: {}", status_str));
+        tracing::warn!("Auth login rejected status={} reason={}", status_str, reason);
         return Err(AuthError::InvalidCredentialsWithReason(reason));
     }
 
@@ -565,13 +665,13 @@ pub async fn login(
         tracing::warn!("Failed to cache session after login: {}", e);
     }
 
-    Ok(Json(LoginResponse {
+    Ok(LoginResponse {
         status: "authenticated".to_string(),
         session_token,
         user,
         expires_at,
         message: "Authentication successful".to_string(),
-    }))
+    })
 }
 
 /// Validate session endpoint - checks if session token is valid.
@@ -615,6 +715,44 @@ pub async fn check_access(
         req.playbook_path,
         req.permission_type
     );
+
+    // noetl/ai-meta#168 synchronous authz fast-path: authorize in-process via
+    // the server's `/api/auth/check-playbook-access` (the byte-identical session
+    // + role/grant lookup the `check_playbook_access` playbook runs) instead of
+    // dispatching the multi-hop off-server drive.  The pre-turn gate runs on
+    // every Muno turn; when the drive is slow (~7s in the incident) it stacks in
+    // front of the planner turn, blows the request budget, and the turn is
+    // dropped before the planner execution is created → the SPA shows "Load
+    // failed".  Same grant/deny decision; only the execution shape changes, so a
+    // wedged/paused system-pool can no longer drop the turn.  A DB lookup error
+    // returns `status != "success"` → we fail **closed** (retryable backend
+    // error, never a false grant).  Gated by its own NOETL_AUTHZ_SYNC flag
+    // (sibling of NOETL_AUTH_SYNC) so it ships inert and is flipped on / rolled
+    // back independently of the already-live login sync path.
+    if authz_sync_enabled() {
+        let credential = state.playbook_config.session_db_credential.clone();
+        let (status, output) = state
+            .noetl
+            .check_access_via_api(
+                &req.session_token,
+                &req.playbook_path,
+                &req.permission_type,
+                &credential,
+            )
+            .await
+            .map_err(|e| AuthError::NoetlError(format!("Check access (sync) failed: {}", e)))?;
+        if status != "success" {
+            let reason = extract_callback_error(&output)
+                .unwrap_or_else(|| "Access check backend unavailable".to_string());
+            tracing::warn!("Sync check_access backend error: {}", reason);
+            return Err(AuthError::AuthBackendUnavailable(reason));
+        }
+        return Ok(Json(finish_check_access(
+            req.playbook_path,
+            req.permission_type,
+            &output,
+        )));
+    }
 
     // Register callback to receive result via NATS
     let (request_id, nats_subject, rx) = state.callbacks.register().await;
@@ -669,25 +807,44 @@ pub async fn check_access(
         })?
         .map_err(|_| AuthError::InternalError("Callback channel closed".to_string()))?;
 
-    let output = callback_result.data;
+    // Both the drive-callback path (here) and the #168 sync path share the same
+    // `{allowed, user, message}` output → CheckAccessResponse parsing.  Keeping
+    // one implementation guarantees the two paths make byte-identical
+    // authorization decisions.
+    Ok(Json(finish_check_access(
+        req.playbook_path,
+        req.permission_type,
+        &callback_result.data,
+    )))
+}
 
+/// Turn an access-check result envelope (`output` = `{allowed, user?, message}`)
+/// into a [`CheckAccessResponse`].
+///
+/// The `output` shape is identical whether it arrived as the
+/// `check_playbook_access` playbook's `/api/internal/callback` body (drive path)
+/// or the server's synchronous `/api/auth/check-playbook-access` response
+/// (noetl/ai-meta#168 fast-path): `allowed` is the grant decision, `user` is the
+/// granted user object (absent on deny), and `message` is the human-readable
+/// reason.  `allowed` defaults to `false` — a malformed or missing decision
+/// fails **closed** (no access granted).
+fn finish_check_access(
+    playbook_path: String,
+    permission_type: String,
+    output: &serde_json::Value,
+) -> CheckAccessResponse {
     let allowed = output.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let user_obj = output.get("user");
-    let user = if let Some(u) = user_obj {
-        Some(UserInfo {
-            user_id: u.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-            email: u.get("email").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-            display_name: u
-                .get("display_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown User")
-                .to_string(),
-            roles: parse_roles(u.get("roles")),
-        })
-    } else {
-        None
-    };
+    let user = output.get("user").map(|u| UserInfo {
+        user_id: u.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        email: u.get("email").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+        display_name: u
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown User")
+            .to_string(),
+        roles: parse_roles(u.get("roles")),
+    });
 
     let message = output
         .get("message")
@@ -697,13 +854,13 @@ pub async fn check_access(
 
     tracing::info!("Auth check_access allowed: {}", allowed);
 
-    Ok(Json(CheckAccessResponse {
+    CheckAccessResponse {
         allowed,
         user,
-        playbook_path: req.playbook_path,
-        permission_type: req.permission_type,
+        playbook_path,
+        permission_type,
         message,
-    }))
+    }
 }
 
 /// Internal callback request body - matches CallbackResult structure
