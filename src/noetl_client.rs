@@ -306,6 +306,64 @@ impl NoetlClient {
         let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
         Ok((callback_status, data))
     }
+
+    /// Authorize a user for a playbook synchronously via the server's in-process
+    /// authz fast-path (`POST /api/auth/check-playbook-access`), bypassing the
+    /// multi-hop off-server `check_playbook_access` drive that the pre-turn gate
+    /// runs today (noetl/ai-meta#168).
+    ///
+    /// Returns the callback-shaped `(status, data)` pair the gateway
+    /// `check_access` handler already knows how to parse: `status` is
+    /// `"success"` with `data` = `{allowed, user?, message}` (the grant/deny
+    /// decision), or `"error"` with `data.error` on an auth-DB lookup failure —
+    /// identical to the `/api/internal/callback` body the `check_playbook_access`
+    /// playbook posts, so both paths feed the same decision tail.
+    pub async fn check_access_via_api(
+        &self,
+        session_token: &str,
+        playbook_path: &str,
+        action: &str,
+        credential: &str,
+    ) -> anyhow::Result<(String, serde_json::Value)> {
+        let url = format!(
+            "{}/api/auth/check-playbook-access",
+            self.base_url.trim_end_matches('/')
+        );
+        let payload = serde_json::json!({
+            "session_token": session_token,
+            "playbook_path": playbook_path,
+            "action": action,
+            "credential": credential,
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("check_access_via_api: send")?;
+
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!(
+                "Check access API request failed: {} - {}",
+                status,
+                body
+            ));
+        }
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).context("check_access_via_api: parse response")?;
+        let callback_status = parsed
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("error")
+            .to_string();
+        let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        Ok((callback_status, data))
+    }
 }
 
 // Response types

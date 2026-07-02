@@ -690,6 +690,42 @@ pub async fn check_access(
         req.permission_type
     );
 
+    // noetl/ai-meta#168 synchronous authz fast-path: authorize in-process via
+    // the server's `/api/auth/check-playbook-access` (the byte-identical session
+    // + role/grant lookup the `check_playbook_access` playbook runs) instead of
+    // dispatching the multi-hop off-server drive.  The pre-turn gate runs on
+    // every Muno turn; when the drive is slow (~7s in the incident) it stacks in
+    // front of the planner turn, blows the request budget, and the turn is
+    // dropped before the planner execution is created → the SPA shows "Load
+    // failed".  Same grant/deny decision; only the execution shape changes, so a
+    // wedged/paused system-pool can no longer drop the turn.  A DB lookup error
+    // returns `status != "success"` → we fail **closed** (retryable backend
+    // error, never a false grant).
+    if auth_sync_enabled() {
+        let credential = state.playbook_config.session_db_credential.clone();
+        let (status, output) = state
+            .noetl
+            .check_access_via_api(
+                &req.session_token,
+                &req.playbook_path,
+                &req.permission_type,
+                &credential,
+            )
+            .await
+            .map_err(|e| AuthError::NoetlError(format!("Check access (sync) failed: {}", e)))?;
+        if status != "success" {
+            let reason = extract_callback_error(&output)
+                .unwrap_or_else(|| "Access check backend unavailable".to_string());
+            tracing::warn!("Sync check_access backend error: {}", reason);
+            return Err(AuthError::AuthBackendUnavailable(reason));
+        }
+        return Ok(Json(finish_check_access(
+            req.playbook_path,
+            req.permission_type,
+            &output,
+        )));
+    }
+
     // Register callback to receive result via NATS
     let (request_id, nats_subject, rx) = state.callbacks.register().await;
 
@@ -743,25 +779,44 @@ pub async fn check_access(
         })?
         .map_err(|_| AuthError::InternalError("Callback channel closed".to_string()))?;
 
-    let output = callback_result.data;
+    // Both the drive-callback path (here) and the #168 sync path share the same
+    // `{allowed, user, message}` output → CheckAccessResponse parsing.  Keeping
+    // one implementation guarantees the two paths make byte-identical
+    // authorization decisions.
+    Ok(Json(finish_check_access(
+        req.playbook_path,
+        req.permission_type,
+        &callback_result.data,
+    )))
+}
 
+/// Turn an access-check result envelope (`output` = `{allowed, user?, message}`)
+/// into a [`CheckAccessResponse`].
+///
+/// The `output` shape is identical whether it arrived as the
+/// `check_playbook_access` playbook's `/api/internal/callback` body (drive path)
+/// or the server's synchronous `/api/auth/check-playbook-access` response
+/// (noetl/ai-meta#168 fast-path): `allowed` is the grant decision, `user` is the
+/// granted user object (absent on deny), and `message` is the human-readable
+/// reason.  `allowed` defaults to `false` — a malformed or missing decision
+/// fails **closed** (no access granted).
+fn finish_check_access(
+    playbook_path: String,
+    permission_type: String,
+    output: &serde_json::Value,
+) -> CheckAccessResponse {
     let allowed = output.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let user_obj = output.get("user");
-    let user = if let Some(u) = user_obj {
-        Some(UserInfo {
-            user_id: u.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-            email: u.get("email").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-            display_name: u
-                .get("display_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown User")
-                .to_string(),
-            roles: parse_roles(u.get("roles")),
-        })
-    } else {
-        None
-    };
+    let user = output.get("user").map(|u| UserInfo {
+        user_id: u.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        email: u.get("email").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+        display_name: u
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown User")
+            .to_string(),
+        roles: parse_roles(u.get("roles")),
+    });
 
     let message = output
         .get("message")
@@ -771,13 +826,13 @@ pub async fn check_access(
 
     tracing::info!("Auth check_access allowed: {}", allowed);
 
-    Ok(Json(CheckAccessResponse {
+    CheckAccessResponse {
         allowed,
         user,
-        playbook_path: req.playbook_path,
-        permission_type: req.permission_type,
+        playbook_path,
+        permission_type,
         message,
-    }))
+    }
 }
 
 /// Internal callback request body - matches CallbackResult structure
