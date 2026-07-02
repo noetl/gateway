@@ -205,6 +205,32 @@ fn auth_sync_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the synchronous in-process **authorization** gate (noetl/ai-meta#168)
+/// is enabled.
+///
+/// The per-turn access gate (`check_playbook_access`) has the same structural
+/// fragility login had: it authorizes the user for the target playbook before
+/// the planner runs, and today it executes as a multi-hop off-server drive
+/// (~7s under load).  Stacked in front of the planner turn it blows the
+/// SPA/gateway request budget and the turn is dropped before the planner
+/// execution is even created → the SPA shows "Load failed" with no execution.
+/// The authorization decision, though, is a plain auth-DB lookup (session row +
+/// role/grant rows) that never needed a deadline-gated distributed workflow.
+///
+/// This is a **sibling** of [`auth_sync_enabled`] rather than the same flag on
+/// purpose: login/validate sync (`NOETL_AUTH_SYNC`) is already live in prod, so
+/// a shared flag would activate authz-sync the instant the new image rolls,
+/// forfeiting the gated "deploy neutral → verify → flip" rollout and
+/// independent rollback.  With its own flag the authz gate ships inert
+/// (byte-identical to today's drive path), is flipped on independently, and
+/// rolls back with `NOETL_AUTHZ_SYNC=false` without disturbing login.  Default
+/// OFF.
+fn authz_sync_enabled() -> bool {
+    std::env::var("NOETL_AUTHZ_SYNC")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
 /// Validate a session token by executing the configured ``validate_session``
 /// playbook through the worker pool and consuming the ``{valid, user,
 /// expires_at}`` callback.  Mirrors [`check_access`]'s execute-playbook-via-NATS
@@ -700,8 +726,10 @@ pub async fn check_access(
     // failed".  Same grant/deny decision; only the execution shape changes, so a
     // wedged/paused system-pool can no longer drop the turn.  A DB lookup error
     // returns `status != "success"` → we fail **closed** (retryable backend
-    // error, never a false grant).
-    if auth_sync_enabled() {
+    // error, never a false grant).  Gated by its own NOETL_AUTHZ_SYNC flag
+    // (sibling of NOETL_AUTH_SYNC) so it ships inert and is flipped on / rolled
+    // back independently of the already-live login sync path.
+    if authz_sync_enabled() {
         let credential = state.playbook_config.session_db_credential.clone();
         let (status, output) = state
             .noetl
