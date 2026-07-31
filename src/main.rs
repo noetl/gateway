@@ -24,6 +24,7 @@ mod auth;
 mod callbacks;
 mod config;
 mod connection_hub;
+mod event_feed;
 mod graphql;
 mod ingress;
 mod noetl_client;
@@ -128,7 +129,41 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Request store disabled (NATS K/V unavailable) - async callbacks will not work");
     }
 
-    if let Err(error) = playbook_state::start_playbook_state_listener(
+    // noetl/ai-meta#212 L1 T3 — which transport feeds lifecycle SSE forwarding.
+    // Default `nats` leaves today's path exactly as it was; `ehdb` reads the
+    // events feed's broadcast face instead. Both stay compiled in, so cutover
+    // and rollback are a flag flip with no redeploy of a different binary.
+    let event_source = event_feed::EventSourceMode::from_env_value(
+        &std::env::var("NOETL_EVENT_SOURCE").unwrap_or_default(),
+    );
+    if event_source.is_ehdb() {
+        let feed_addr = std::env::var("NOETL_EVENT_FEED_ADDR").unwrap_or_default();
+        if feed_addr.trim().is_empty() {
+            // Loud: the operator asked for EHDB and the SPA would silently get
+            // no live updates. Fall back to NATS rather than serve nothing.
+            tracing::error!(
+                "NOETL_EVENT_SOURCE=ehdb but NOETL_EVENT_FEED_ADDR is empty;                  falling back to the NATS lifecycle listener"
+            );
+            if let Err(error) = playbook_state::start_playbook_state_listener(
+                &config.nats.url,
+                &config.nats.updates_subject_prefix,
+                request_store.clone(),
+                connection_hub.clone(),
+            )
+            .await
+            {
+                tracing::warn!(%error, "Execution lifecycle SSE forwarding disabled");
+            }
+        } else if let Err(error) = event_feed::start_ehdb_feed_listener(
+            feed_addr.trim(),
+            request_store.clone(),
+            connection_hub.clone(),
+        )
+        .await
+        {
+            tracing::warn!(%error, "EHDB execution lifecycle SSE forwarding disabled");
+        }
+    } else if let Err(error) = playbook_state::start_playbook_state_listener(
         &config.nats.url,
         &config.nats.updates_subject_prefix,
         request_store.clone(),
