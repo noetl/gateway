@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.5.0](https://github.com/noetl/gateway/compare/v3.4.1...v3.5.0) (2026-07-31)
+
+### Features
+
+* **event-feed:** read execution lifecycle off the EHDB feed (flag-gated) ([2ef13d2](https://github.com/noetl/gateway/commit/2ef13d2fe6deeb7fd7bff55eabd10a7d3740a6b9))
+
 ## [3.4.1](https://github.com/noetl/gateway/compare/v3.4.0...v3.4.1) (2026-06-26)
 
 ### Bug Fixes
