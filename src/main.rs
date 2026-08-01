@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Gateway configuration loaded:");
     tracing::info!("  Server: {}:{}", config.server.bind, config.server.port);
     tracing::info!("  NoETL: {}", config.noetl.base_url);
-    tracing::info!("  NATS: {}", config.nats.url);
+    
     tracing::info!("  Auth playbooks:");
     tracing::info!("    login: {}", config.auth_playbooks.login);
     tracing::info!(
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let noetl_arc = Arc::new(noetl);
 
     // Callback manager using NATS pub/sub
-    let callback_manager = Arc::new(CallbackManager::new(Some(config.nats.callback_subject_prefix.clone())));
+    let callback_manager = Arc::new(CallbackManager::new(Some(config.kv.callback_subject_prefix.clone())));
 
     // noetl/ai-meta#213 — the NATS callback listener is GONE.
     //
@@ -100,130 +100,76 @@ async fn main() -> anyhow::Result<()> {
     // a gateway with no NATS to reach exited 1 at boot. `CallbackManager` stays
     // — the HTTP endpoint uses its in-process registry.
 
-    // noetl/ai-meta#214/#215 — the KV backend. `NOETL_KV_ADDR` points at the
-    // EHDB writer's KV face; when set, both the session cache and the request
-    // store use it and NATS KV is not touched at all.
-    let ehdb_kv_addr = std::env::var("NOETL_KV_ADDR")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    // Initialize session cache (EHDB KV when configured, else NATS K/V).
-    let session_cache = Arc::new(match &ehdb_kv_addr {
-        Some(addr) => SessionCache::with_ehdb(
-            config.nats.session_bucket.clone(),
-            config.nats.session_cache_ttl_secs,
-            addr,
-        ),
-        None => SessionCache::new(
-            config.nats.session_bucket.clone(),
-            config.nats.session_cache_ttl_secs,
-        ),
-    });
-    let cache_enabled = if session_cache.is_ehdb() {
-        true
-    } else {
-        session_cache.connect(&config.nats.url).await.unwrap_or(false)
-    };
-    if cache_enabled {
-        tracing::info!(
-            "Session cache enabled: bucket={}, ttl={}s",
-            config.nats.session_bucket,
-            config.nats.session_cache_ttl_secs
-        );
-    } else {
-        tracing::warn!(
-            "Session cache disabled (NATS K/V unavailable) - all validations will query Postgres via NoETL API"
+    // The EHDB KV store backs both the session cache and the request store
+    // (noetl/ai-meta#214/#215). There is no other backend since the NATS
+    // removal, so an unset address is a hard startup error: the request store
+    // backs EVERY SSE route, and a gateway that starts without it serves an SPA
+    // that silently receives nothing.
+    let kv_addr = std::env::var("NOETL_KV_ADDR").unwrap_or_default();
+    if kv_addr.trim().is_empty() {
+        anyhow::bail!(
+            "NOETL_KV_ADDR is empty — the gateway has no KV store for its session \
+             cache or its request store, and every SSE route would be dropped. \
+             Point it at the events writer's KV face (e.g. \
+             noetl-cmdbus-writer-0.noetl.svc.cluster.local:9107)."
         );
     }
+    let kv_addr = kv_addr.trim();
+
+    let session_cache = Arc::new(SessionCache::new(
+        config.kv.session_bucket.clone(),
+        config.kv.session_cache_ttl_secs,
+        kv_addr,
+    ));
+    tracing::info!(
+        "Session cache on EHDB KV: bucket={}, ttl={}s",
+        config.kv.session_bucket,
+        config.kv.session_cache_ttl_secs
+    );
 
     // Initialize connection hub for SSE/WebSocket connections
     let connection_hub = Arc::new(ConnectionHub::new());
 
-    // Initialize request store for pending playbook callbacks (optional - degrades gracefully)
-    let request_store = Arc::new(match &ehdb_kv_addr {
-        Some(addr) => RequestStore::with_ehdb(
-            config.nats.request_bucket.clone(),
-            config.nats.request_ttl_secs,
-            addr,
-        ),
-        None => RequestStore::new(
-            config.nats.request_bucket.clone(),
-            config.nats.request_ttl_secs,
-        ),
-    });
-    let request_store_enabled = if request_store.is_ehdb() {
-        // Probe once at startup. This store backs EVERY SSE route, so a bad
-        // address must be loud here rather than silently dropping every route
-        // later (noetl/ai-meta#214).
-        match request_store.probe_ehdb().await {
-            Ok(()) => {
-                tracing::info!(addr = %ehdb_kv_addr.as_deref().unwrap_or(""),
-                    "Request store + session cache on EHDB KV");
-                true
-            }
-            Err(error) => {
-                tracing::error!(%error, addr = %ehdb_kv_addr.as_deref().unwrap_or(""),
-                    "EHDB KV unreachable — SSE routing will not work");
-                false
-            }
-        }
+    let request_store = Arc::new(RequestStore::new(
+        config.kv.request_bucket.clone(),
+        config.kv.request_ttl_secs,
+        kv_addr,
+    ));
+    // Probe once at startup. This store backs EVERY SSE route, so a bad address
+    // must be loud here rather than silently dropping every route later
+    // (noetl/ai-meta#214).
+    if let Err(error) = request_store.probe().await {
+        tracing::error!(%error, %kv_addr, "EHDB KV unreachable — SSE routing will not work");
     } else {
-        request_store.connect(&config.nats.url).await.unwrap_or(false)
-    };
-    if request_store_enabled {
         tracing::info!(
-            "Request store enabled: bucket={}, ttl={}s",
-            config.nats.request_bucket,
-            config.nats.request_ttl_secs
+            %kv_addr,
+            "Request store on EHDB KV: bucket={}, ttl={}s",
+            config.kv.request_bucket,
+            config.kv.request_ttl_secs
         );
-    } else {
-        tracing::warn!("Request store disabled (NATS K/V unavailable) - async callbacks will not work");
     }
 
-    // noetl/ai-meta#212 L1 T3 — which transport feeds lifecycle SSE forwarding.
-    // Default `nats` leaves today's path exactly as it was; `ehdb` reads the
-    // events feed's broadcast face instead. Both stay compiled in, so cutover
-    // and rollback are a flag flip with no redeploy of a different binary.
-    let event_source = event_feed::EventSourceMode::from_env_value(
-        &std::env::var("NOETL_EVENT_SOURCE").unwrap_or_default(),
-    );
-    if event_source.is_ehdb() {
-        let feed_addr = std::env::var("NOETL_EVENT_FEED_ADDR").unwrap_or_default();
-        if feed_addr.trim().is_empty() {
-            // Loud: the operator asked for EHDB and the SPA would silently get
-            // no live updates. Fall back to NATS rather than serve nothing.
-            tracing::error!(
-                "NOETL_EVENT_SOURCE=ehdb but NOETL_EVENT_FEED_ADDR is empty;                  falling back to the NATS lifecycle listener"
-            );
-            if let Err(error) = playbook_state::start_playbook_state_listener(
-                &config.nats.url,
-                &config.nats.updates_subject_prefix,
-                request_store.clone(),
-                connection_hub.clone(),
-            )
-            .await
-            {
-                tracing::warn!(%error, "Execution lifecycle SSE forwarding disabled");
-            }
-        } else if let Err(error) = event_feed::start_ehdb_feed_listener(
-            feed_addr.trim(),
-            request_store.clone(),
-            connection_hub.clone(),
-        )
-        .await
-        {
-            tracing::warn!(%error, "EHDB execution lifecycle SSE forwarding disabled");
-        }
-    } else if let Err(error) = playbook_state::start_playbook_state_listener(
-        &config.nats.url,
-        &config.nats.updates_subject_prefix,
+    // Execution-lifecycle SSE forwarding, off the EHDB events feed
+    // (noetl/ai-meta#212). The NATS listener it replaced is gone, so there is no
+    // transport to select between any more — an unset address is a hard startup
+    // error rather than a fallback, because a gateway that starts without a
+    // lifecycle feed serves an SPA that hangs with nothing in the logs.
+    let feed_addr = std::env::var("NOETL_EVENT_FEED_ADDR").unwrap_or_default();
+    if feed_addr.trim().is_empty() {
+        anyhow::bail!(
+            "NOETL_EVENT_FEED_ADDR is empty — the gateway has no execution-lifecycle \
+             feed and the SPA would receive no live updates. Point it at the events \
+             writer's SSE face (e.g. noetl-cmdbus-writer-0.noetl.svc.cluster.local:9105)."
+        );
+    }
+    if let Err(error) = event_feed::start_ehdb_feed_listener(
+        feed_addr.trim(),
         request_store.clone(),
         connection_hub.clone(),
     )
     .await
     {
-        tracing::warn!(%error, "Execution lifecycle SSE forwarding disabled");
+        tracing::warn!(%error, "EHDB execution lifecycle SSE forwarding disabled");
     }
 
     // SSE state for real-time callbacks
