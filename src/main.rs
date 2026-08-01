@@ -24,6 +24,7 @@ mod auth;
 mod callbacks;
 mod config;
 mod connection_hub;
+mod ehdb_kv;
 mod event_feed;
 mod graphql;
 mod ingress;
@@ -92,12 +93,31 @@ async fn main() -> anyhow::Result<()> {
         .await
         .log("Failed to start NATS callback listener")?;
 
-    // Initialize session cache using NATS K/V (optional - degrades gracefully)
-    let session_cache = Arc::new(SessionCache::new(
-        config.nats.session_bucket.clone(),
-        config.nats.session_cache_ttl_secs,
-    ));
-    let cache_enabled = session_cache.connect(&config.nats.url).await.unwrap_or(false);
+    // noetl/ai-meta#214/#215 — the KV backend. `NOETL_KV_ADDR` points at the
+    // EHDB writer's KV face; when set, both the session cache and the request
+    // store use it and NATS KV is not touched at all.
+    let ehdb_kv_addr = std::env::var("NOETL_KV_ADDR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Initialize session cache (EHDB KV when configured, else NATS K/V).
+    let session_cache = Arc::new(match &ehdb_kv_addr {
+        Some(addr) => SessionCache::with_ehdb(
+            config.nats.session_bucket.clone(),
+            config.nats.session_cache_ttl_secs,
+            addr,
+        ),
+        None => SessionCache::new(
+            config.nats.session_bucket.clone(),
+            config.nats.session_cache_ttl_secs,
+        ),
+    });
+    let cache_enabled = if session_cache.is_ehdb() {
+        true
+    } else {
+        session_cache.connect(&config.nats.url).await.unwrap_or(false)
+    };
     if cache_enabled {
         tracing::info!(
             "Session cache enabled: bucket={}, ttl={}s",
@@ -114,11 +134,36 @@ async fn main() -> anyhow::Result<()> {
     let connection_hub = Arc::new(ConnectionHub::new());
 
     // Initialize request store for pending playbook callbacks (optional - degrades gracefully)
-    let request_store = Arc::new(RequestStore::new(
-        config.nats.request_bucket.clone(),
-        config.nats.request_ttl_secs,
-    ));
-    let request_store_enabled = request_store.connect(&config.nats.url).await.unwrap_or(false);
+    let request_store = Arc::new(match &ehdb_kv_addr {
+        Some(addr) => RequestStore::with_ehdb(
+            config.nats.request_bucket.clone(),
+            config.nats.request_ttl_secs,
+            addr,
+        ),
+        None => RequestStore::new(
+            config.nats.request_bucket.clone(),
+            config.nats.request_ttl_secs,
+        ),
+    });
+    let request_store_enabled = if request_store.is_ehdb() {
+        // Probe once at startup. This store backs EVERY SSE route, so a bad
+        // address must be loud here rather than silently dropping every route
+        // later (noetl/ai-meta#214).
+        match request_store.probe_ehdb().await {
+            Ok(()) => {
+                tracing::info!(addr = %ehdb_kv_addr.as_deref().unwrap_or(""),
+                    "Request store + session cache on EHDB KV");
+                true
+            }
+            Err(error) => {
+                tracing::error!(%error, addr = %ehdb_kv_addr.as_deref().unwrap_or(""),
+                    "EHDB KV unreachable — SSE routing will not work");
+                false
+            }
+        }
+    } else {
+        request_store.connect(&config.nats.url).await.unwrap_or(false)
+    };
     if request_store_enabled {
         tracing::info!(
             "Request store enabled: bucket={}, ttl={}s",
