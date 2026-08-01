@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.0](https://github.com/noetl/gateway/compare/v3.6.0...v3.7.0) (2026-08-01)
+
+### Features
+
+* **callbacks:** drop the NATS callback listener ([151747d](https://github.com/noetl/gateway/commit/151747d3f08d67af6a2fb7889104b75af25e4291))
+
 ## [3.6.0](https://github.com/noetl/gateway/compare/v3.5.0...v3.6.0) (2026-08-01)
 
 ### Features
