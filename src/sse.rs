@@ -126,7 +126,9 @@ pub async fn sse_handler(
         .await;
 
     // Get pending requests for reconnection recovery
-    let pending_requests = if state.request_store.is_connected().await {
+    // The request store is always EHDB-backed now, so there is no
+    // is-it-connected branch to take.
+    let pending_requests = {
         let requests = state.request_store.get_by_client(&client_id).await;
         if requests.is_empty() {
             None
@@ -142,8 +144,6 @@ pub async fn sse_handler(
                     .collect(),
             )
         }
-    } else {
-        None
     };
 
     // Send initialization message

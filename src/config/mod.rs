@@ -1,6 +1,6 @@
 pub use application_env::ApplicationEnv;
 pub use gateway_config::{
-    AuthPlaybooksConfig, CorsConfig, GatewayConfig, NatsConfig, NoetlConfig, ServerConfig,
+    AuthPlaybooksConfig, CorsConfig, GatewayConfig, KvConfig, NoetlConfig, ServerConfig,
 };
 pub use postgresql_env::PostgresqlEnv;
 

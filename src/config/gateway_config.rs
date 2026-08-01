@@ -18,7 +18,7 @@ pub struct GatewayConfig {
     /// NoETL backend configuration
     pub noetl: NoetlConfig,
     /// NATS messaging configuration
-    pub nats: NatsConfig,
+    pub kv: KvConfig,
     /// CORS configuration
     pub cors: CorsConfig,
     /// Authentication playbook paths
@@ -87,16 +87,10 @@ pub struct NoetlConfig {
 /// NATS configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct NatsConfig {
-    /// NATS server URL (default: "nats://127.0.0.1:4222")
-    pub url: String,
-    /// Username for NATS authentication
-    pub username: Option<String>,
-    /// Password for NATS authentication
-    pub password: Option<String>,
-    /// Subject prefix for execution updates (default: "playbooks.executions.")
-    pub updates_subject_prefix: String,
-    /// Subject prefix for callbacks (default: "noetl.callbacks")
+pub struct KvConfig {
+    /// Callback request-id prefix. Retained from the NATS era as the
+    /// `CallbackManager`'s id namespace — it is no longer a subject, since
+    /// nothing subscribes (noetl/ai-meta#213).
     pub callback_subject_prefix: String,
     /// K/V bucket name for session cache (default: "sessions")
     pub session_bucket: String,
@@ -188,7 +182,7 @@ impl Default for GatewayConfig {
         Self {
             server: ServerConfig::default(),
             noetl: NoetlConfig::default(),
-            nats: NatsConfig::default(),
+            kv: KvConfig::default(),
             cors: CorsConfig::default(),
             auth_playbooks: AuthPlaybooksConfig::default(),
             transport: TransportConfig::default(),
@@ -218,13 +212,9 @@ impl Default for NoetlConfig {
     }
 }
 
-impl Default for NatsConfig {
+impl Default for KvConfig {
     fn default() -> Self {
         Self {
-            url: "nats://127.0.0.1:4222".to_string(),
-            username: None,
-            password: None,
-            updates_subject_prefix: "playbooks.executions.".to_string(),
             callback_subject_prefix: "noetl.callbacks".to_string(),
             session_bucket: "sessions".to_string(),
             session_cache_ttl_secs: 300, // 5 minutes
@@ -339,36 +329,27 @@ impl GatewayConfig {
             }
         }
 
-        // NATS config
-        if let Ok(val) = std::env::var("NATS_URL") {
-            self.nats.url = val;
+        // EHDB KV store config.  These were NATS_*-named but have always been
+        // the bucket names + TTLs, not NATS settings (noetl/ai-meta#218).
+        // Renamed to match what they configure; the dead connection vars
+        // (NATS_URL / USERNAME / PASSWORD / UPDATES_SUBJECT_PREFIX) are gone.
+        if let Ok(val) = std::env::var("NOETL_KV_CALLBACK_ID_PREFIX") {
+            self.kv.callback_subject_prefix = val;
         }
-        if let Ok(val) = std::env::var("NATS_USERNAME") {
-            self.nats.username = Some(val);
+        if let Ok(val) = std::env::var("NOETL_KV_SESSION_BUCKET") {
+            self.kv.session_bucket = val;
         }
-        if let Ok(val) = std::env::var("NATS_PASSWORD") {
-            self.nats.password = Some(val);
-        }
-        if let Ok(val) = std::env::var("NATS_UPDATES_SUBJECT_PREFIX") {
-            self.nats.updates_subject_prefix = val;
-        }
-        if let Ok(val) = std::env::var("NATS_CALLBACK_SUBJECT_PREFIX") {
-            self.nats.callback_subject_prefix = val;
-        }
-        if let Ok(val) = std::env::var("NATS_SESSION_BUCKET") {
-            self.nats.session_bucket = val;
-        }
-        if let Ok(val) = std::env::var("NATS_SESSION_CACHE_TTL_SECS") {
+        if let Ok(val) = std::env::var("NOETL_KV_SESSION_TTL_SECS") {
             if let Ok(secs) = val.parse() {
-                self.nats.session_cache_ttl_secs = secs;
+                self.kv.session_cache_ttl_secs = secs;
             }
         }
-        if let Ok(val) = std::env::var("NATS_REQUEST_BUCKET") {
-            self.nats.request_bucket = val;
+        if let Ok(val) = std::env::var("NOETL_KV_REQUEST_BUCKET") {
+            self.kv.request_bucket = val;
         }
-        if let Ok(val) = std::env::var("NATS_REQUEST_TTL_SECS") {
+        if let Ok(val) = std::env::var("NOETL_KV_REQUEST_TTL_SECS") {
             if let Ok(secs) = val.parse() {
-                self.nats.request_ttl_secs = secs;
+                self.kv.request_ttl_secs = secs;
             }
         }
 
