@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.6.0](https://github.com/noetl/gateway/compare/v3.5.0...v3.6.0) (2026-08-01)
+
+### Features
+
+* **kv:** move the session cache and request store onto EHDB KV ([a1289a2](https://github.com/noetl/gateway/commit/a1289a2933e4d0b1403e7dec2c8b07cb8c1400a1)), closes [noetl/ehdb#307](https://github.com/noetl/ehdb/issues/307) [noetl/worker#202](https://github.com/noetl/worker/issues/202)
+
 ## [3.5.0](https://github.com/noetl/gateway/compare/v3.4.1...v3.5.0) (2026-07-31)
 
 ### Features
