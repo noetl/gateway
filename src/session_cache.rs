@@ -26,6 +26,7 @@ pub struct CachedSession {
 #[derive(Clone)]
 pub struct SessionCache {
     store: Arc<RwLock<Option<Store>>>,
+    ehdb: Option<crate::ehdb_kv::EhdbKvClient>,
     bucket_name: String,
     ttl_secs: u64,
 }
@@ -35,9 +36,24 @@ impl SessionCache {
     pub fn new(bucket_name: String, ttl_secs: u64) -> Self {
         Self {
             store: Arc::new(RwLock::new(None)),
+            ehdb: None,
             bucket_name,
             ttl_secs,
         }
+    }
+
+    /// An EHDB-KV-backed cache (writer KV face at `addr`).
+    pub fn with_ehdb(bucket_name: String, ttl_secs: u64, addr: &str) -> Self {
+        Self {
+            store: Arc::new(RwLock::new(None)),
+            ehdb: Some(crate::ehdb_kv::EhdbKvClient::new(addr)),
+            bucket_name,
+            ttl_secs,
+        }
+    }
+
+    pub fn is_ehdb(&self) -> bool {
+        self.ehdb.is_some()
     }
 
     /// Connect to NATS and initialize the K/V store.
@@ -133,11 +149,27 @@ impl SessionCache {
 
     /// Check if cache is connected
     pub async fn is_connected(&self) -> bool {
+        if self.ehdb.is_some() {
+            return true;
+        }
         self.store.read().await.is_some()
     }
 
     /// Get a cached session by token
     pub async fn get(&self, session_token: &str) -> Option<CachedSession> {
+        if let Some(kv) = &self.ehdb {
+            return match kv.get(&self.bucket_name, session_token).await {
+                Ok(Some(body)) => serde_json::from_str(&body).ok(),
+                Ok(None) => None,
+                Err(e) => {
+                    // A cache miss and a store failure both fall through to the
+                    // authoritative Postgres lookup, so this is safe — but it
+                    // must be visible, or a dead cache looks like cold traffic.
+                    tracing::warn!(error = %e, "EHDB KV get failed for session cache");
+                    None
+                }
+            };
+        }
         let guard = self.store.read().await;
         let store = guard.as_ref()?;
 
@@ -176,6 +208,18 @@ impl SessionCache {
 
     /// Cache a session
     pub async fn put(&self, session: &CachedSession) -> anyhow::Result<()> {
+        if let Some(kv) = &self.ehdb {
+            let body = serde_json::to_string(session)?;
+            // A failed cache write is not fatal — the next read falls through to
+            // Postgres — so log and continue rather than failing the request.
+            if let Err(e) = kv
+                .put(&self.bucket_name, &session.session_token, &body, self.ttl_secs)
+                .await
+            {
+                tracing::warn!(error = %e, "EHDB KV put failed for session cache");
+            }
+            return Ok(());
+        }
         let guard = self.store.read().await;
         let store = match guard.as_ref() {
             Some(s) => s,
@@ -199,6 +243,12 @@ impl SessionCache {
 
     /// Invalidate a cached session
     pub async fn invalidate(&self, session_token: &str) -> anyhow::Result<()> {
+        if let Some(kv) = &self.ehdb {
+            // Invalidation MUST propagate: a stale cached session outliving its
+            // logout is a security problem, not a performance one.
+            kv.delete(&self.bucket_name, session_token).await?;
+            return Ok(());
+        }
         let guard = self.store.read().await;
         let store = match guard.as_ref() {
             Some(s) => s,
