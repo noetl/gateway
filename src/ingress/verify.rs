@@ -39,18 +39,23 @@ pub struct VerifyRejection {
 
 impl VerifyRejection {
     fn unauthorized(reason: &'static str, detail: impl Into<String>) -> Self {
-        Self { status: 401, reason, detail: detail.into() }
+        Self {
+            status: 401,
+            reason,
+            detail: detail.into(),
+        }
     }
     fn forbidden(reason: &'static str, detail: impl Into<String>) -> Self {
-        Self { status: 403, reason, detail: detail.into() }
+        Self {
+            status: 403,
+            reason,
+            detail: detail.into(),
+        }
     }
 }
 
 /// Look up a single header value (case-insensitive) from the normalized map.
-fn header_str<'a>(
-    headers: &'a serde_json::Map<String, serde_json::Value>,
-    name: &str,
-) -> Option<&'a str> {
+fn header_str<'a>(headers: &'a serde_json::Map<String, serde_json::Value>, name: &str) -> Option<&'a str> {
     match headers.get(&name.to_ascii_lowercase())? {
         serde_json::Value::String(s) => Some(s.as_str()),
         // Multi-value: take the first (verification headers are single-valued).
@@ -74,9 +79,8 @@ pub fn verify(
         "hmac_sha256" => verify_hmac(cfg, headers, body),
         "bearer" => verify_bearer(cfg, headers),
         "pubsub_oidc" => {
-            let jwks = jwks.ok_or_else(|| {
-                VerifyRejection::unauthorized("oidc_no_jwks", "no JWKS available for OIDC verify")
-            })?;
+            let jwks =
+                jwks.ok_or_else(|| VerifyRejection::unauthorized("oidc_no_jwks", "no JWKS available for OIDC verify"))?;
             verify_oidc(cfg, headers, jwks)
         }
         other => Err(VerifyRejection::forbidden(
@@ -93,15 +97,13 @@ fn verify_hmac(
     body: &[u8],
 ) -> Result<(), VerifyRejection> {
     let header_name = cfg.header.as_deref().unwrap_or("x-signature");
-    let secret = cfg.secret.as_deref().ok_or_else(|| {
-        VerifyRejection::forbidden("misconfigured", "hmac_sha256 verify has no resolved secret")
-    })?;
+    let secret = cfg
+        .secret
+        .as_deref()
+        .ok_or_else(|| VerifyRejection::forbidden("misconfigured", "hmac_sha256 verify has no resolved secret"))?;
 
     let provided = header_str(headers, header_name).ok_or_else(|| {
-        VerifyRejection::unauthorized(
-            "missing_signature",
-            format!("missing signature header '{header_name}'"),
-        )
+        VerifyRejection::unauthorized("missing_signature", format!("missing signature header '{header_name}'"))
     })?;
     // Accept an optional `sha256=` prefix (GitHub-style) on the header value.
     let provided = provided
@@ -135,13 +137,13 @@ fn verify_bearer(
     headers: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), VerifyRejection> {
     let header_name = cfg.header.as_deref().unwrap_or("authorization");
-    let secret = cfg.secret.as_deref().ok_or_else(|| {
-        VerifyRejection::forbidden("misconfigured", "bearer verify has no resolved token")
-    })?;
+    let secret = cfg
+        .secret
+        .as_deref()
+        .ok_or_else(|| VerifyRejection::forbidden("misconfigured", "bearer verify has no resolved token"))?;
 
-    let raw = header_str(headers, header_name).ok_or_else(|| {
-        VerifyRejection::unauthorized("missing_token", format!("missing '{header_name}' header"))
-    })?;
+    let raw = header_str(headers, header_name)
+        .ok_or_else(|| VerifyRejection::unauthorized("missing_token", format!("missing '{header_name}' header")))?;
     // Strip an optional `Bearer ` scheme.
     let token = raw
         .strip_prefix("Bearer ")
@@ -202,21 +204,22 @@ fn verify_oidc(
     headers: &serde_json::Map<String, serde_json::Value>,
     jwks: &Jwks,
 ) -> Result<(), VerifyRejection> {
-    let raw = header_str(headers, "authorization").ok_or_else(|| {
-        VerifyRejection::unauthorized("missing_token", "missing Authorization header for OIDC")
-    })?;
+    let raw = header_str(headers, "authorization")
+        .ok_or_else(|| VerifyRejection::unauthorized("missing_token", "missing Authorization header for OIDC"))?;
     let token = raw
         .strip_prefix("Bearer ")
         .or_else(|| raw.strip_prefix("bearer "))
         .unwrap_or(raw)
         .trim();
 
-    let audience = cfg.audience.as_deref().ok_or_else(|| {
-        VerifyRejection::forbidden("misconfigured", "pubsub_oidc verify has no audience")
-    })?;
-    let expected_sa = cfg.service_account.as_deref().ok_or_else(|| {
-        VerifyRejection::forbidden("misconfigured", "pubsub_oidc verify has no service_account")
-    })?;
+    let audience = cfg
+        .audience
+        .as_deref()
+        .ok_or_else(|| VerifyRejection::forbidden("misconfigured", "pubsub_oidc verify has no audience"))?;
+    let expected_sa = cfg
+        .service_account
+        .as_deref()
+        .ok_or_else(|| VerifyRejection::forbidden("misconfigured", "pubsub_oidc verify has no service_account"))?;
 
     validate_oidc_jwt(token, jwks, audience, expected_sa)
 }
@@ -224,22 +227,17 @@ fn verify_oidc(
 /// Pure JWT validation — separated from header extraction + JWKS fetch so it is
 /// unit-testable with a self-minted RSA key + JWKS (no network, no clock dep
 /// beyond `jsonwebtoken`'s own `exp` check).
-pub fn validate_oidc_jwt(
-    token: &str,
-    jwks: &Jwks,
-    audience: &str,
-    expected_sa: &str,
-) -> Result<(), VerifyRejection> {
+pub fn validate_oidc_jwt(token: &str, jwks: &Jwks, audience: &str, expected_sa: &str) -> Result<(), VerifyRejection> {
     use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
     let header = decode_header(token)
         .map_err(|e| VerifyRejection::unauthorized("oidc_malformed", format!("jwt header: {e}")))?;
-    let kid = header.kid.ok_or_else(|| {
-        VerifyRejection::unauthorized("oidc_malformed", "jwt has no 'kid'")
-    })?;
-    let jwk = jwks.find(&kid).ok_or_else(|| {
-        VerifyRejection::unauthorized("oidc_unknown_kid", format!("no JWKS key for kid '{kid}'"))
-    })?;
+    let kid = header
+        .kid
+        .ok_or_else(|| VerifyRejection::unauthorized("oidc_malformed", "jwt has no 'kid'"))?;
+    let jwk = jwks
+        .find(&kid)
+        .ok_or_else(|| VerifyRejection::unauthorized("oidc_unknown_kid", format!("no JWKS key for kid '{kid}'")))?;
 
     let key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
         .map_err(|e| VerifyRejection::forbidden("oidc_bad_key", format!("jwk rsa: {e}")))?;
@@ -252,12 +250,8 @@ pub fn validate_oidc_jwt(
     let data = decode::<OidcClaims>(token, &key, &validation).map_err(|e| {
         use jsonwebtoken::errors::ErrorKind;
         match e.kind() {
-            ErrorKind::ExpiredSignature => {
-                VerifyRejection::unauthorized("oidc_expired", "OIDC token expired")
-            }
-            ErrorKind::InvalidAudience => {
-                VerifyRejection::forbidden("oidc_wrong_audience", "OIDC audience mismatch")
-            }
+            ErrorKind::ExpiredSignature => VerifyRejection::unauthorized("oidc_expired", "OIDC token expired"),
+            ErrorKind::InvalidAudience => VerifyRejection::forbidden("oidc_wrong_audience", "OIDC audience mismatch"),
             ErrorKind::InvalidSignature => {
                 VerifyRejection::unauthorized("oidc_bad_signature", "OIDC signature invalid")
             }
@@ -471,14 +465,26 @@ lFO21bDlxABcQoPC4GwHh61UrN/dlS9nsZxVz0fH5D/gWj++BLI8EMYFObkkEGHV
 
     #[test]
     fn oidc_wrong_audience_rejected() {
-        let jwt = mint("https://evil.example/ingress", TEST_SA, true, now_unix() + 3600, TEST_KID);
+        let jwt = mint(
+            "https://evil.example/ingress",
+            TEST_SA,
+            true,
+            now_unix() + 3600,
+            TEST_KID,
+        );
         let err = validate_oidc_jwt(&jwt, &test_jwks(), TEST_AUD, TEST_SA).unwrap_err();
         assert_eq!(err.reason, "oidc_wrong_audience");
     }
 
     #[test]
     fn oidc_wrong_service_account_rejected() {
-        let jwt = mint(TEST_AUD, "attacker@evil.iam.gserviceaccount.com", true, now_unix() + 3600, TEST_KID);
+        let jwt = mint(
+            TEST_AUD,
+            "attacker@evil.iam.gserviceaccount.com",
+            true,
+            now_unix() + 3600,
+            TEST_KID,
+        );
         let err = validate_oidc_jwt(&jwt, &test_jwks(), TEST_AUD, TEST_SA).unwrap_err();
         assert_eq!(err.reason, "oidc_wrong_sa");
     }
@@ -500,19 +506,44 @@ lFO21bDlxABcQoPC4GwHh61UrN/dlS9nsZxVz0fH5D/gWj++BLI8EMYFObkkEGHV
     #[test]
     fn oidc_bad_signature_rejected() {
         // Mint a valid token, then corrupt the signature segment.
+        //
+        // Tamper in the MIDDLE, not at the end.  An RS256 signature is 256 bytes
+        // → 342 base64url chars, and the final char encodes only the trailing 2
+        // bits, so most substitutions there produce a string that fails to
+        // *decode*.  The old version flipped the last char and so exercised the
+        // decode path, asserting `oidc_bad_signature` while actually getting
+        // `oidc_invalid` — a red test that looked like a signature-verification
+        // regression and was only a bad tamper.  A middle char stays valid
+        // base64url, so the signature decodes cleanly and genuinely fails
+        // verification, which is the path this test exists to cover.
         let jwt = mint(TEST_AUD, TEST_SA, true, now_unix() + 3600, TEST_KID);
-        let mut parts: Vec<&str> = jwt.split('.').collect();
-        // Flip the last character of the signature.
-        let sig = parts[2].to_string();
-        let flipped = if sig.ends_with('A') {
-            format!("{}B", &sig[..sig.len() - 1])
-        } else {
-            format!("{}A", &sig[..sig.len() - 1])
-        };
-        parts[2] = &flipped;
-        let tampered = parts.join(".");
+        let parts: Vec<&str> = jwt.split('.').collect();
+        let sig = parts[2];
+        let mid = sig.len() / 2;
+        let orig = &sig[mid..mid + 1];
+        let replacement = if orig == "A" { "B" } else { "A" };
+        let flipped = format!("{}{}{}", &sig[..mid], replacement, &sig[mid + 1..]);
+        assert_ne!(flipped, sig, "the tamper must actually change the signature");
+        let tampered = format!("{}.{}.{}", parts[0], parts[1], flipped);
+
         let err = validate_oidc_jwt(&tampered, &test_jwks(), TEST_AUD, TEST_SA).unwrap_err();
-        assert_eq!(err.reason, "oidc_bad_signature");
+        assert_eq!(
+            err.reason, "oidc_bad_signature",
+            "a decodable-but-wrong signature must fail signature verification"
+        );
+    }
+
+    /// The end-flip case the old test accidentally exercised: an undecodable
+    /// signature. It must still be **rejected** — just under a different reason.
+    /// Pinned so nobody "fixes" the reason code back and reintroduces the
+    /// confusion, and so a regression that started *accepting* it would fail.
+    #[test]
+    fn oidc_undecodable_signature_is_still_rejected() {
+        let jwt = mint(TEST_AUD, TEST_SA, true, now_unix() + 3600, TEST_KID);
+        let parts: Vec<&str> = jwt.split('.').collect();
+        let tampered = format!("{}.{}.{}!!!", parts[0], parts[1], parts[2]);
+        let err = validate_oidc_jwt(&tampered, &test_jwks(), TEST_AUD, TEST_SA).unwrap_err();
+        assert_eq!(err.reason, "oidc_invalid");
     }
 
     // ---- LIVE Pub/Sub OIDC validation against the REAL Google JWKS ----
@@ -544,10 +575,9 @@ lFO21bDlxABcQoPC4GwHh61UrN/dlS9nsZxVz0fH5D/gWj++BLI8EMYFObkkEGHV
     async fn oidc_live_google_token_against_real_jwks() {
         let token = std::env::var("NOETL_LIVE_OIDC_TOKEN")
             .expect("set NOETL_LIVE_OIDC_TOKEN to a real Google-signed OIDC token");
-        let aud =
-            std::env::var("NOETL_LIVE_OIDC_AUD").expect("set NOETL_LIVE_OIDC_AUD to the token's audience");
-        let sa = std::env::var("NOETL_LIVE_OIDC_SA")
-            .expect("set NOETL_LIVE_OIDC_SA to the token's service-account email");
+        let aud = std::env::var("NOETL_LIVE_OIDC_AUD").expect("set NOETL_LIVE_OIDC_AUD to the token's audience");
+        let sa =
+            std::env::var("NOETL_LIVE_OIDC_SA").expect("set NOETL_LIVE_OIDC_SA to the token's service-account email");
 
         // Fetch Google's LIVE signing keys via the gateway's own code path.
         let http = reqwest::Client::new();
