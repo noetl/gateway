@@ -88,10 +88,17 @@ async fn main() -> anyhow::Result<()> {
     // Callback manager using NATS pub/sub
     let callback_manager = Arc::new(CallbackManager::new(Some(config.nats.callback_subject_prefix.clone())));
 
-    // Start NATS callback listener
-    callbacks::start_nats_listener(&config.nats.url, callback_manager.clone())
-        .await
-        .log("Failed to start NATS callback listener")?;
+    // noetl/ai-meta#213 — the NATS callback listener is GONE.
+    //
+    // `noetl.callbacks.>` was a legacy delivery path. Every auth playbook that
+    // still names `callback_subject` marks it "Legacy - kept for compatibility"
+    // and delivers over `/api/internal/callback` instead, and all three auth
+    // flows run on their sync fast-paths (NOETL_AUTH_SYNC / NOETL_AUTHZ_SYNC)
+    // which never dispatch a playbook at all.
+    //
+    // It also could not have survived the NATS teardown: this call used `?`, so
+    // a gateway with no NATS to reach exited 1 at boot. `CallbackManager` stays
+    // — the HTTP endpoint uses its in-process registry.
 
     // noetl/ai-meta#214/#215 — the KV backend. `NOETL_KV_ADDR` points at the
     // EHDB writer's KV face; when set, both the session cache and the request
