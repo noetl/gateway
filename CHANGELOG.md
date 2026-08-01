@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.1](https://github.com/noetl/gateway/compare/v3.7.0...v3.7.1) (2026-08-01)
+
+### Bug Fixes
+
+* **startup:** require the EHDB feed + KV addresses instead of degrading silently ([508efaa](https://github.com/noetl/gateway/commit/508efaa2a0c4725d572eb32258720d5e4bdcd243))
+
 ## [3.7.0](https://github.com/noetl/gateway/compare/v3.6.0...v3.7.0) (2026-08-01)
 
 ### Features
