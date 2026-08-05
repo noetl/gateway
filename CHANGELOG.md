@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.0](https://github.com/noetl/gateway/compare/v3.11.0...v3.12.0) (2026-08-05)
+
+### Features
+
+* **metrics:** count authorization outcomes, completing the auth family ([532d156](https://github.com/noetl/gateway/commit/532d156cca2110b6a7bded98d3264ed6ba183336)), closes [noetl/gateway#42](https://github.com/noetl/gateway/issues/42) [noetl/ai-meta#245](https://github.com/noetl/ai-meta/issues/245) [noetl/ai-meta#238](https://github.com/noetl/ai-meta/issues/238)
+
 ## [3.11.0](https://github.com/noetl/gateway/compare/v3.10.0...v3.11.0) (2026-08-05)
 
 ### Features
