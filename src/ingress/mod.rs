@@ -179,6 +179,95 @@ pub fn record_session_check(outcome: &str) {
     }
 }
 
+/// Silent-failure counters for the gateway's non-ingress paths.
+///
+/// Each covers a path that logged and counted nothing.  All are unlabelled or
+/// closed-label and pinned at 0, so a healthy gateway reads zeros.
+///
+/// Deliberately NOT covering the ingress forward failure: that path already
+/// records `noetl_ingress_rejected_total{reason="dispatch_error"}` inside the
+/// `reject()` helper.  A scan for `metrics::` near the log line misses recording
+/// delegated to a helper, so it looked uninstrumented and is not.
+pub const EVENT_FEED_RECONNECT_REASONS: [&str; 2] = ["ended", "error"];
+pub const SESSION_CACHE_STAGES: [&str; 2] = ["after_login", "after_api_validate"];
+
+static AUTH_CANCEL_FAILED: std::sync::OnceLock<prometheus::IntCounter> = std::sync::OnceLock::new();
+static SESSION_CACHE_FAILED: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+static CALLBACK_UNDELIVERED: std::sync::OnceLock<prometheus::IntCounter> = std::sync::OnceLock::new();
+static EVENT_FEED_RECONNECT: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+
+/// Register the silent-failure counters and pin every series at 0.
+pub fn register_silent_failure_metrics(registry: &Registry) -> anyhow::Result<()> {
+    let cancel = prometheus::IntCounter::new(
+        "noetl_gateway_auth_cancel_failed_total",
+        "Auth executions the gateway timed out on and then failed to cancel (noetl/ai-meta#238).",
+    )?;
+    registry.register(Box::new(cancel.clone()))?;
+    let _ = AUTH_CANCEL_FAILED.set(cancel);
+
+    let cache = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_session_cache_failed_total",
+            "Sessions the gateway failed to cache, by stage (noetl/ai-meta#238).",
+        ),
+        &["stage"],
+    )?;
+    registry.register(Box::new(cache.clone()))?;
+    for st in SESSION_CACHE_STAGES {
+        cache.with_label_values(&[st]).inc_by(0);
+    }
+    let _ = SESSION_CACHE_FAILED.set(cache);
+
+    let cb = prometheus::IntCounter::new(
+        "noetl_gateway_callback_undelivered_total",
+        "Callbacks whose receiver was already gone — the caller got nothing (noetl/ai-meta#238).",
+    )?;
+    registry.register(Box::new(cb.clone()))?;
+    let _ = CALLBACK_UNDELIVERED.set(cb);
+
+    let feed = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_event_feed_reconnect_total",
+            "Lifecycle-feed reconnects, by reason (noetl/ai-meta#238).",
+        ),
+        &["reason"],
+    )?;
+    registry.register(Box::new(feed.clone()))?;
+    for r in EVENT_FEED_RECONNECT_REASONS {
+        feed.with_label_values(&[r]).inc_by(0);
+    }
+    let _ = EVENT_FEED_RECONNECT.set(feed);
+    Ok(())
+}
+
+/// An auth execution was left running after the gateway gave up on it.
+pub fn record_auth_cancel_failed() {
+    if let Some(m) = AUTH_CANCEL_FAILED.get() {
+        m.inc();
+    }
+}
+
+/// A session was validated but not cached, so the next request repeats the work.
+pub fn record_session_cache_failed(stage: &str) {
+    if let Some(m) = SESSION_CACHE_FAILED.get() {
+        m.with_label_values(&[stage]).inc();
+    }
+}
+
+/// A callback arrived for a receiver that was already gone.
+pub fn record_callback_undelivered() {
+    if let Some(m) = CALLBACK_UNDELIVERED.get() {
+        m.inc();
+    }
+}
+
+/// The execution-lifecycle feed dropped and is redialling.
+pub fn record_event_feed_reconnect(reason: &str) {
+    if let Some(m) = EVENT_FEED_RECONNECT.get() {
+        m.with_label_values(&[reason]).inc();
+    }
+}
+
 /// Register `noetl_gateway_auth_bypass_enabled` — 1 when `GATEWAY_AUTH_BYPASS`
 /// is on, meaning the gateway accepts ANY session token and injects a synthetic
 /// `user_id: 0` context.
@@ -727,6 +816,64 @@ async fn emit_directives_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every silent-failure counter must be present at 0 and recorded at its
+    /// real site.
+    ///
+    /// The forward-failure path is deliberately absent from this list: it
+    /// already records `noetl_ingress_rejected_total{reason="dispatch_error"}`
+    /// inside `reject()`.  A scan for `metrics::` near a log line cannot see
+    /// recording delegated to a helper, so it read as uninstrumented — adding a
+    /// second counter there would have double-counted the same event.
+    #[test]
+    fn silent_failure_metrics_are_present_and_wired() {
+        use prometheus::{Encoder, TextEncoder};
+        let registry = Registry::new();
+        register_silent_failure_metrics(&registry).expect("register");
+        let mut buf = Vec::new();
+        TextEncoder::new().encode(&registry.gather(), &mut buf).expect("encode");
+        let text = String::from_utf8(buf).expect("utf8");
+
+        for name in [
+            "noetl_gateway_auth_cancel_failed_total",
+            "noetl_gateway_callback_undelivered_total",
+        ] {
+            assert!(
+                text.lines().any(|l| l.starts_with(&format!("{name} "))),
+                "{name} must be present at 0"
+            );
+        }
+        for (metric, values) in [
+            ("noetl_gateway_session_cache_failed_total", &SESSION_CACHE_STAGES[..]),
+            ("noetl_gateway_event_feed_reconnect_total", &EVENT_FEED_RECONNECT_REASONS[..]),
+        ] {
+            for v in values {
+                assert!(
+                    text.lines().any(|l| l.starts_with(&format!("{metric}{{"))
+                        && l.contains(&format!("\"{v}\""))),
+                    "{metric} is missing {v}"
+                );
+            }
+        }
+
+        // Each must be recorded where the failure actually happens.
+        let auth = include_str!("../auth/mod.rs");
+        assert!(auth.contains("record_auth_cancel_failed()"));
+        for stage in SESSION_CACHE_STAGES {
+            assert!(
+                auth.contains(&format!("record_session_cache_failed(\"{stage}\")")),
+                "session cache stage {stage} is declared but never recorded"
+            );
+        }
+        assert!(include_str!("../callbacks.rs").contains("record_callback_undelivered()"));
+        let feed = include_str!("../event_feed.rs");
+        for r in EVENT_FEED_RECONNECT_REASONS {
+            assert!(
+                feed.contains(&format!("record_event_feed_reconnect(\"{r}\")")),
+                "feed reconnect reason {r} is declared but never recorded"
+            );
+        }
+    }
 
     /// Every declared auth outcome must be pinned AND actually recorded
     /// somewhere, and every branch of the middleware must record exactly once.

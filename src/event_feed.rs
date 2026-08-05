@@ -150,10 +150,12 @@ pub async fn start_ehdb_feed_listener(
         loop {
             match run_feed_connection(&addr, &mut cursor, &request_store, &connection_hub).await {
                 Ok(()) => {
+                    crate::ingress::record_event_feed_reconnect("ended");
                     tracing::warn!(%addr, cursor, "EHDB lifecycle feed ended; reconnecting");
                     backoff = Duration::from_millis(250);
                 }
                 Err(error) => {
+                    crate::ingress::record_event_feed_reconnect("error");
                     tracing::warn!(%addr, cursor, %error, "EHDB lifecycle feed error; reconnecting");
                 }
             }
