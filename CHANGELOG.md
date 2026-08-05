@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.10.0](https://github.com/noetl/gateway/compare/v3.9.0...v3.10.0) (2026-08-05)
+
+### Features
+
+* **metrics:** count auth outcomes on the gateway edge ([7ce6786](https://github.com/noetl/gateway/commit/7ce6786251e1b31f2bb63032f4adc70ad4965fde)), closes [gateway#41](https://github.com/noetl/gateway/issues/41) [noetl/ai-meta#238](https://github.com/noetl/ai-meta/issues/238)
+
 ## [3.9.0](https://github.com/noetl/gateway/compare/v3.8.0...v3.9.0) (2026-08-05)
 
 ### Features
