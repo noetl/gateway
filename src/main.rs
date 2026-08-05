@@ -297,6 +297,14 @@ async fn main() -> anyhow::Result<()> {
     let ingress_registry = Arc::new(prometheus::Registry::new());
     let ingress_metrics = ingress::IngressMetrics::register(&ingress_registry)
         .log("Failed to register ingress metrics")?;
+    // Every ingress metric is labelled by `subscription`, and `Registry::gather`
+    // prunes empty metric families — so before this, a gateway that had not yet
+    // received a delivery served a completely EMPTY /metrics.  Verified against
+    // production: 0 bytes, 0 families.  An empty body is indistinguishable from
+    // a broken exporter, a wrong port, or a pod that is not the gateway at all,
+    // and it carries no way to tell which binary is running
+    // (noetl/ai-meta#238).
+    ingress::register_build_info(&ingress_registry).log("Failed to register build_info")?;
     let ingress_routes = if let Some(token) = config.internal_api_token.clone() {
         let ingress_state = Arc::new(ingress::IngressState::new(
             config.noetl.base_url.clone(),
