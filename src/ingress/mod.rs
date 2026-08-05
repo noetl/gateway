@@ -40,7 +40,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use prometheus::{IntCounterVec, Opts, Registry};
+use prometheus::{IntCounterVec, IntGaugeVec, Opts, Registry};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -86,6 +86,33 @@ impl IngressMetrics {
         registry.register(Box::new(dispatched.clone()))?;
         Ok(Self { received, rejected, dispatched })
     }
+}
+
+/// Register `noetl_gateway_build_info{version}` — always 1; the version is the
+/// point.
+///
+/// `Registry::gather` prunes metric families with no children, so a labelled
+/// metric is absent from `/metrics` until a child series exists.  Every metric
+/// on this registry is labelled by `subscription`, which means a gateway that
+/// has not yet received a delivery serves an empty body — as production does
+/// today.  Empty cannot be told apart from a broken exporter or the wrong port,
+/// and it identifies no binary.
+///
+/// This gauge is unconditional and needs no traffic, so the endpoint always
+/// answers with at least "I am a gateway, and I am this version".
+pub fn register_build_info(registry: &Registry) -> anyhow::Result<()> {
+    let build_info = IntGaugeVec::new(
+        Opts::new(
+            "noetl_gateway_build_info",
+            "Always 1; the version label identifies the running binary (noetl/ai-meta#238).",
+        ),
+        &["version"],
+    )?;
+    registry.register(Box::new(build_info.clone()))?;
+    build_info
+        .with_label_values(&[env!("CARGO_PKG_VERSION")])
+        .set(1);
+    Ok(())
 }
 
 struct CachedConfig {
@@ -605,6 +632,42 @@ async fn emit_directives_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A registry carrying only the ingress counters gathers to nothing until a
+    /// delivery arrives, which is what production serves today: a 200 with an
+    /// empty body.  Registering build_info must make the endpoint answer
+    /// without any traffic at all.
+    #[test]
+    fn build_info_makes_metrics_non_empty_without_traffic() {
+        use prometheus::{Encoder, TextEncoder};
+
+        let registry = Registry::new();
+        IngressMetrics::register(&registry).expect("register ingress metrics");
+
+        let render = |r: &Registry| {
+            let mut buf = Vec::new();
+            TextEncoder::new()
+                .encode(&r.gather(), &mut buf)
+                .expect("encode");
+            String::from_utf8(buf).expect("utf8")
+        };
+
+        assert!(
+            render(&registry).is_empty(),
+            "precondition: labelled-only registry gathers to nothing"
+        );
+
+        register_build_info(&registry).expect("register build_info");
+        let text = render(&registry);
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("noetl_gateway_build_info{"))
+            .expect("build_info must be present with no traffic");
+        assert!(
+            line.contains(&format!("version=\"{}\"", env!("CARGO_PKG_VERSION"))),
+            "build_info must carry the crate version; got {line:?}"
+        );
+    }
 
     fn cfg(source: &str, payload_from: &str) -> IngressConfig {
         serde_json::from_value(json!({
