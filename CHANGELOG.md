@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.11.0](https://github.com/noetl/gateway/compare/v3.10.0...v3.11.0) (2026-08-05)
+
+### Features
+
+* **metrics:** the gateway's silent-failure paths ([05934ff](https://github.com/noetl/gateway/commit/05934ff7a462808756b0395fb9d55ac162dc80dd))
+
 ## [3.10.0](https://github.com/noetl/gateway/compare/v3.9.0...v3.10.0) (2026-08-05)
 
 ### Features
