@@ -750,6 +750,7 @@ pub async fn check_access(
         if status != "success" {
             let reason = extract_callback_error(&output)
                 .unwrap_or_else(|| "Access check backend unavailable".to_string());
+            crate::ingress::record_authz("backend_error");
             tracing::warn!("Sync check_access backend error: {}", reason);
             return Err(AuthError::AuthBackendUnavailable(reason));
         }
@@ -858,6 +859,7 @@ fn finish_check_access(
         .unwrap_or("Access check completed")
         .to_string();
 
+    crate::ingress::record_authz(if allowed { "allowed" } else { "denied" });
     tracing::info!("Auth check_access allowed: {}", allowed);
 
     CheckAccessResponse {

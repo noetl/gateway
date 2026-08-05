@@ -128,11 +128,21 @@ pub fn register_build_info(registry: &Registry) -> anyhow::Result<()> {
 pub const LOGIN_OUTCOMES: [&str; 3] = ["succeeded", "callback_failed", "not_authenticated"];
 
 /// Outcomes of the per-request session check in the auth middleware.
+/// Outcomes of the per-request authorization check.
+///
+/// The gateway makes THREE auth decisions — login, session validity, and
+/// access — and only the first two were counted.  `backend_error` matters
+/// operationally even though it fails closed: when the access-check backend is
+/// down every request is denied, and from a dashboard "everyone is denied" and
+/// "nobody is asking" look identical without this.
+pub const AUTHZ_OUTCOMES: [&str; 3] = ["allowed", "denied", "backend_error"];
+
 pub const SESSION_CHECK_OUTCOMES: [&str; 5] =
     ["ok", "missing_token", "invalid_or_expired", "validation_error", "bypass"];
 
 static LOGIN_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
 static SESSION_CHECK_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+static AUTHZ_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
 
 /// Register both auth-outcome counters and pin every series at 0.
 pub fn register_auth_outcome_metrics(registry: &Registry) -> anyhow::Result<()> {
@@ -161,7 +171,27 @@ pub fn register_auth_outcome_metrics(registry: &Registry) -> anyhow::Result<()> 
         session.with_label_values(&[o]).inc_by(0);
     }
     let _ = SESSION_CHECK_TOTAL.set(session);
+
+    let authz = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_authz_total",
+            "Authorization checks by outcome (noetl/ai-meta#238).",
+        ),
+        &["outcome"],
+    )?;
+    registry.register(Box::new(authz.clone()))?;
+    for o in AUTHZ_OUTCOMES {
+        authz.with_label_values(&[o]).inc_by(0);
+    }
+    let _ = AUTHZ_TOTAL.set(authz);
     Ok(())
+}
+
+/// Record one authorization outcome.
+pub fn record_authz(outcome: &str) {
+    if let Some(m) = AUTHZ_TOTAL.get() {
+        m.with_label_values(&[outcome]).inc();
+    }
 }
 
 /// Record one login outcome.  A no-op before registration, so a unit test that
@@ -894,6 +924,7 @@ mod tests {
         for (metric, outcomes) in [
             ("noetl_gateway_login_total", &LOGIN_OUTCOMES[..]),
             ("noetl_gateway_session_check_total", &SESSION_CHECK_OUTCOMES[..]),
+            ("noetl_gateway_authz_total", &AUTHZ_OUTCOMES[..]),
         ] {
             for o in outcomes {
                 assert!(
@@ -922,6 +953,14 @@ mod tests {
         // The success paths specifically — counting only failures would make
         // the rate uninterpretable.
         assert!(auth_mod.contains("record_login(\"succeeded\")"));
+        // All three authz outcomes, including the one that fails CLOSED: when
+        // the backend is down every request is denied, and without this
+        // "everyone denied" and "nobody asking" are the same picture.
+        assert!(auth_mod.contains("record_authz(\"backend_error\")"));
+        assert!(
+            auth_mod.contains("record_authz(if allowed"),
+            "allowed/denied must both be recorded from the same decision"
+        );
         assert!(middleware.contains("record_session_check(\"ok\")"));
     }
 
