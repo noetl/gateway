@@ -1,14 +1,24 @@
 //! **L1 T3 — the EHDB events feed as the gateway's lifecycle source.**
 //!
-//! The gateway forwards execution-lifecycle events to SPA clients over SSE. Its
-//! source today is a **core NATS** subscribe on `noetl.events.>`
-//! ([`crate::playbook_state`]) — pure broadcast, no ack, no replay. That
-//! subscription is one of the four consumers pinning NATS alive, and the last
-//! one before T5 can even be considered (noetl/ai-meta#212).
+//! The gateway forwards execution-lifecycle events to SPA clients over SSE.
 //!
-//! This module is the EHDB-sourced twin, behind `NOETL_EVENT_SOURCE`
-//! (`nats` | `ehdb`, default `nats`). Both remain available so cutover and
-//! rollback are a flag flip.
+//! **This is the only source.** It was written as the EHDB-sourced twin of a
+//! core-NATS subscribe on `noetl.events.>`, selectable via `NOETL_EVENT_SOURCE`
+//! so cutover and rollback were a flag flip. T5 deleted NATS
+//! (noetl/ai-meta#194), and `main.rs` now starts this listener
+//! **unconditionally** once `NOETL_EVENT_FEED_ADDR` is non-empty — there is no
+//! mode branch and no other path.
+//!
+//! Consequences worth knowing before editing:
+//!
+//! - `NOETL_EVENT_SOURCE` is **read by nothing**. It is still set to `ehdb` on
+//!   the prod Deployment, where it has no effect.
+//! - [`EventSourceMode`] below is unused outside this module —
+//!   [`EventSourceMode::from_env_value`] is called only from this file's own
+//!   tests. Its `Nats` variant describes a path that no longer exists.
+//!
+//! Whether to delete the enum or re-wire it is a disposition decision tracked
+//! on noetl/ai-meta#242; it is left in place rather than removed silently.
 //!
 //! **Why a hand-rolled SSE reader instead of depending on `ehdb-feed`.** The
 //! gateway is a thin HTTP edge; pulling in the feed crate would drag the whole
@@ -54,8 +64,12 @@ pub enum EventSourceMode {
 }
 
 impl EventSourceMode {
-    /// Parse `NOETL_EVENT_SOURCE`; anything unrecognised is `nats`, so a typo
-    /// can never silently take the SPA's live updates off their working path.
+    /// Parse an event-source value; anything unrecognised is `nats`.
+    ///
+    /// ⚠ The safety property this comment used to claim — *"a typo can never
+    /// silently take the SPA's live updates off their working path"* — no
+    /// longer holds, because `nats` is not a working path. NATS was deleted at
+    /// T5. Nothing calls this outside the tests below; see the module header.
     pub fn from_env_value(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "ehdb" => Self::Ehdb,
