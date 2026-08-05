@@ -10,7 +10,7 @@ use super::types::UserContext;
 use super::AuthState;
 
 /// Check if auth bypass is enabled (for development/testing)
-fn is_auth_bypass_enabled() -> bool {
+pub fn is_auth_bypass_enabled() -> bool {
     std::env::var("GATEWAY_AUTH_BYPASS")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false)
