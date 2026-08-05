@@ -145,6 +145,7 @@ fn cancel_pending_callback(callbacks: Arc<CallbackManager>, request_id: String) 
 fn cancel_auth_execution(noetl: Arc<NoetlClient>, execution_id: String, reason: String) {
     tokio::spawn(async move {
         if let Err(error) = noetl.cancel_execution(&execution_id, &reason).await {
+            crate::ingress::record_auth_cancel_failed();
             tracing::warn!(
                 "Failed to cancel auth execution {} after gateway timeout: {}",
                 execution_id,
@@ -403,6 +404,7 @@ pub async fn resolve_session_cache_or_db(
             };
 
             if let Err(e) = state.session_cache.put(&cached).await {
+                crate::ingress::record_session_cache_failed("after_api_validate");
                 tracing::warn!("Failed to cache API-validated session: {}", e);
             }
 
@@ -664,6 +666,7 @@ async fn finish_login(
         roles: user.roles.clone(),
     };
     if let Err(e) = state.session_cache.put(&cached_session).await {
+        crate::ingress::record_session_cache_failed("after_login");
         tracing::warn!("Failed to cache session after login: {}", e);
     }
 

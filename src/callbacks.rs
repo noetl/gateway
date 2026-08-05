@@ -71,6 +71,7 @@ impl CallbackManager {
                     true
                 }
                 Err(_) => {
+                    crate::ingress::record_callback_undelivered();
                     tracing::warn!("Callback receiver dropped for request_id={}", request_id);
                     false
                 }
