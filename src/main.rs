@@ -305,6 +305,14 @@ async fn main() -> anyhow::Result<()> {
     // and it carries no way to tell which binary is running
     // (noetl/ai-meta#238).
     ingress::register_build_info(&ingress_registry).log("Failed to register build_info")?;
+    // The gateway's most consequential state, and previously readable only from
+    // a per-request warn!  Registered on BOTH paths so a healthy gateway reads 0
+    // rather than being absent (noetl/ai-meta#238).
+    ingress::register_auth_bypass_gauge(
+        &ingress_registry,
+        auth::middleware::is_auth_bypass_enabled(),
+    )
+    .log("Failed to register auth bypass gauge")?;
     let ingress_routes = if let Some(token) = config.internal_api_token.clone() {
         let ingress_state = Arc::new(ingress::IngressState::new(
             config.noetl.base_url.clone(),

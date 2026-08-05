@@ -115,6 +115,37 @@ pub fn register_build_info(registry: &Registry) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Register `noetl_gateway_auth_bypass_enabled` — 1 when `GATEWAY_AUTH_BYPASS`
+/// is on, meaning the gateway accepts ANY session token and injects a synthetic
+/// `user_id: 0` context.
+///
+/// This is the single most consequential piece of state the gateway holds, and
+/// until now its only signal was a `tracing::warn!` emitted **per request** —
+/// so the evidence that authentication is disabled is a log flood, and the
+/// flood is also the symptom.  Nothing on `/metrics` said anything at all.
+///
+/// A gauge is the right shape: it survives the boot it describes, it is
+/// alertable (`== 1` would be the highest-severity rule in the fleet), and it
+/// is present at 0 on a healthy gateway rather than absent — because "auth is
+/// fine" and "I cannot tell whether auth is on" must not look the same.
+///
+/// Verified 2026-08-05: the variable is NOT set on the production gateway, and
+/// the parse is fail-safe — only exactly `"true"` or `"1"` enable it, so a
+/// typo like `TRUE` or `yes` leaves authentication ON.
+pub fn register_auth_bypass_gauge(registry: &Registry, enabled: bool) -> anyhow::Result<()> {
+    let g = IntGaugeVec::new(
+        Opts::new(
+            "noetl_gateway_auth_bypass_enabled",
+            "1 when GATEWAY_AUTH_BYPASS is on and every session token is accepted (noetl/ai-meta#238).",
+        ),
+        &["mode"],
+    )?;
+    registry.register(Box::new(g.clone()))?;
+    g.with_label_values(&[if enabled { "bypass" } else { "enforced" }])
+        .set(i64::from(enabled));
+    Ok(())
+}
+
 struct CachedConfig {
     cfg: IngressConfig,
     at: Instant,
@@ -632,6 +663,42 @@ async fn emit_directives_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bypass gauge must be present in BOTH states.
+    ///
+    /// A gauge that only appears when bypass is ON would leave "auth is
+    /// enforced" and "I cannot tell" identical — which is the whole failure
+    /// this replaces, since the previous signal was a per-request warn that
+    /// exists only in the dangerous state.
+    #[test]
+    fn auth_bypass_gauge_is_present_in_both_states() {
+        use prometheus::{Encoder, TextEncoder};
+        let render = |r: &Registry| {
+            let mut buf = Vec::new();
+            TextEncoder::new().encode(&r.gather(), &mut buf).expect("encode");
+            String::from_utf8(buf).expect("utf8")
+        };
+
+        for (enabled, want_mode, want_value) in
+            [(false, "enforced", " 0"), (true, "bypass", " 1")]
+        {
+            let registry = Registry::new();
+            register_auth_bypass_gauge(&registry, enabled).expect("register");
+            let text = render(&registry);
+            let line = text
+                .lines()
+                .find(|l| l.starts_with("noetl_gateway_auth_bypass_enabled{"))
+                .unwrap_or_else(|| panic!("gauge must be present when enabled={enabled}"));
+            assert!(
+                line.contains(&format!("mode=\"{want_mode}\"")),
+                "enabled={enabled} must report mode={want_mode}; got {line:?}"
+            );
+            assert!(
+                line.ends_with(want_value),
+                "enabled={enabled} must read{want_value}; got {line:?}"
+            );
+        }
+    }
 
     /// A registry carrying only the ingress counters gathers to nothing until a
     /// delivery arrives, which is what production serves today: a 200 with an
