@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.8.0](https://github.com/noetl/gateway/compare/v3.7.1...v3.8.0) (2026-08-05)
+
+### Features
+
+* **metrics:** publish build_info so /metrics is never an empty body ([09418c2](https://github.com/noetl/gateway/commit/09418c247eec2cf727bc22d6614ed87f4ff31fad)), closes [noetl/server#316](https://github.com/noetl/server/issues/316) [noetl/worker#233](https://github.com/noetl/worker/issues/233) [noetl/ai-meta#238](https://github.com/noetl/ai-meta/issues/238)
+
 ## [3.7.1](https://github.com/noetl/gateway/compare/v3.7.0...v3.7.1) (2026-08-01)
 
 ### Bug Fixes
