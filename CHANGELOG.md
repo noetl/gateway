@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.1](https://github.com/noetl/gateway/compare/v3.12.0...v3.12.1) (2026-08-05)
+
+### Bug Fixes
+
+* **release:** semantic-release never bumped Cargo.toml, so the version froze ([b32535b](https://github.com/noetl/gateway/commit/b32535b84ecad1000d79a0c2799f3c151405be12)), closes [noetl/gateway#41](https://github.com/noetl/gateway/issues/41) [ai-meta#224](https://github.com/noetl/ai-meta/issues/224) [noetl/ai-meta#238](https://github.com/noetl/ai-meta/issues/238) [noetl/ai-meta#224](https://github.com/noetl/ai-meta/issues/224)
+
 ## [3.12.0](https://github.com/noetl/gateway/compare/v3.11.0...v3.12.0) (2026-08-05)
 
 ### Features
