@@ -107,12 +107,26 @@ jobs:
               "ghcr.io/noetl/gateway:${IMAGE_TAG}-arm64"
           fi
 
+      # Parsed as JSON, not grepped.  The first version matched
+      # '"architecture":"..."' with no space after the colon; the raw index is
+      # pretty-printed, so it matched nothing and `set -o pipefail` turned that
+      # into a job failure while the manifest was in fact CORRECT.  A false
+      # negative is the better direction to fail in, but it is still a check
+      # reporting on its own formatting assumption rather than on the artifact.
       - name: Verify both architectures are in the manifest
         shell: bash
         run: |
           set -euo pipefail
-          got=$(docker buildx imagetools inspect "ghcr.io/noetl/gateway:${IMAGE_TAG}" --raw \
-                | grep -o '"architecture":"[a-z0-9]*"' | sort -u | tr '\n' ' ')
-          echo "manifest architectures: $got"
-          echo "$got" | grep -q 'amd64' || { echo "amd64 missing"; exit 1; }
-          echo "$got" | grep -q 'arm64' || { echo "arm64 MISSING — the whole point of #245"; exit 1; }
+          docker buildx imagetools inspect "ghcr.io/noetl/gateway:${IMAGE_TAG}" --raw > /tmp/idx.json
+          python3 - <<'EOF'
+          import json, sys
+          idx = json.load(open("/tmp/idx.json"))
+          arches = {
+              m.get("platform", {}).get("architecture")
+              for m in idx.get("manifests", [])
+          } - {None, "unknown"}
+          print("manifest architectures:", sorted(arches))
+          missing = {"amd64", "arm64"} - arches
+          if missing:
+              sys.exit(f"MISSING {sorted(missing)} — publishing one arch is the defect #245 fixed")
+          EOF
