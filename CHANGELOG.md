@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.0](https://github.com/noetl/gateway/compare/v3.8.0...v3.9.0) (2026-08-05)
+
+### Features
+
+* **metrics:** make GATEWAY_AUTH_BYPASS readable from /metrics ([cb6aa9c](https://github.com/noetl/gateway/commit/cb6aa9c11812c0de0bf9382516c7ced92d5ec3ce)), closes [noetl/ai-meta#238](https://github.com/noetl/ai-meta/issues/238)
+
 ## [3.8.0](https://github.com/noetl/gateway/compare/v3.7.1...v3.8.0) (2026-08-05)
 
 ### Features
