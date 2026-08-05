@@ -26,6 +26,7 @@ pub async fn auth_middleware(
     let session_token = extract_session_token(&request);
 
     if session_token.is_none() {
+        crate::ingress::record_session_check("missing_token");
         tracing::warn!("No session token provided");
         return Err((StatusCode::UNAUTHORIZED, "Missing authentication token").into_response());
     }
@@ -34,6 +35,7 @@ pub async fn auth_middleware(
 
     // Development mode: bypass validation but still require a token
     if is_auth_bypass_enabled() {
+        crate::ingress::record_session_check("bypass");
         tracing::warn!("AUTH BYPASS ENABLED - skipping session validation (dev mode)");
         let user_context = UserContext {
             user_id: 0,
@@ -48,6 +50,7 @@ pub async fn auth_middleware(
     let session = super::resolve_session_cache_or_db(state.as_ref(), token)
         .await
         .map_err(|e| {
+            crate::ingress::record_session_check("validation_error");
             tracing::error!("Session validation failed: {:?}", e);
             e.into_response()
         })?;
@@ -55,10 +58,12 @@ pub async fn auth_middleware(
     let cached = if let Some(cached) = session {
         cached
     } else {
+        crate::ingress::record_session_check("invalid_or_expired");
         tracing::warn!("Invalid or expired session token");
         return Err((StatusCode::UNAUTHORIZED, "Invalid or expired session").into_response());
     };
 
+    crate::ingress::record_session_check("ok");
     let user_context = UserContext {
         user_id: cached.user_id,
         email: cached.email,

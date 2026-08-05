@@ -588,6 +588,7 @@ async fn finish_login(
 ) -> Result<LoginResponse, AuthError> {
     if callback_status != "success" {
         let reason = extract_callback_error(output).unwrap_or_else(|| "Invalid credentials".to_string());
+        crate::ingress::record_login("callback_failed");
         tracing::warn!(
             "Auth login failed status={} reason={}",
             callback_status,
@@ -604,6 +605,7 @@ async fn finish_login(
     if status_str != "authenticated" {
         let reason =
             extract_callback_error(output).unwrap_or_else(|| format!("Authentication status: {}", status_str));
+        crate::ingress::record_login("not_authenticated");
         tracing::warn!("Auth login rejected status={} reason={}", status_str, reason);
         return Err(AuthError::InvalidCredentialsWithReason(reason));
     }
@@ -665,6 +667,7 @@ async fn finish_login(
         tracing::warn!("Failed to cache session after login: {}", e);
     }
 
+    crate::ingress::record_login("succeeded");
     Ok(LoginResponse {
         status: "authenticated".to_string(),
         session_token,
