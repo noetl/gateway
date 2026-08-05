@@ -313,6 +313,8 @@ async fn main() -> anyhow::Result<()> {
         auth::middleware::is_auth_bypass_enabled(),
     )
     .log("Failed to register auth bypass gauge")?;
+    ingress::register_auth_outcome_metrics(&ingress_registry)
+        .log("Failed to register auth outcome metrics")?;
     let ingress_routes = if let Some(token) = config.internal_api_token.clone() {
         let ingress_state = Arc::new(ingress::IngressState::new(
             config.noetl.base_url.clone(),

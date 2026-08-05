@@ -115,6 +115,70 @@ pub fn register_build_info(registry: &Registry) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Auth outcome counters for the gateway edge.
+///
+/// The gateway terminates untrusted inbound traffic, and until now every auth
+/// decision it made was visible only as a `tracing::warn!` on the failing
+/// branch.  That makes the *rate* — the thing that actually distinguishes a
+/// broken auth backend from credential-stuffing from a quiet Tuesday —
+/// unavailable without log aggregation.
+///
+/// Both label sets are closed and pinned at 0, so a gateway that has served no
+/// logins reads zeros rather than being absent.
+pub const LOGIN_OUTCOMES: [&str; 3] = ["succeeded", "callback_failed", "not_authenticated"];
+
+/// Outcomes of the per-request session check in the auth middleware.
+pub const SESSION_CHECK_OUTCOMES: [&str; 5] =
+    ["ok", "missing_token", "invalid_or_expired", "validation_error", "bypass"];
+
+static LOGIN_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+static SESSION_CHECK_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+
+/// Register both auth-outcome counters and pin every series at 0.
+pub fn register_auth_outcome_metrics(registry: &Registry) -> anyhow::Result<()> {
+    let login = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_login_total",
+            "Login attempts by outcome (noetl/ai-meta#238).",
+        ),
+        &["outcome"],
+    )?;
+    registry.register(Box::new(login.clone()))?;
+    for o in LOGIN_OUTCOMES {
+        login.with_label_values(&[o]).inc_by(0);
+    }
+    let _ = LOGIN_TOTAL.set(login);
+
+    let session = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_session_check_total",
+            "Per-request session checks by outcome (noetl/ai-meta#238).",
+        ),
+        &["outcome"],
+    )?;
+    registry.register(Box::new(session.clone()))?;
+    for o in SESSION_CHECK_OUTCOMES {
+        session.with_label_values(&[o]).inc_by(0);
+    }
+    let _ = SESSION_CHECK_TOTAL.set(session);
+    Ok(())
+}
+
+/// Record one login outcome.  A no-op before registration, so a unit test that
+/// never registers cannot panic.
+pub fn record_login(outcome: &str) {
+    if let Some(m) = LOGIN_TOTAL.get() {
+        m.with_label_values(&[outcome]).inc();
+    }
+}
+
+/// Record one per-request session-check outcome.
+pub fn record_session_check(outcome: &str) {
+    if let Some(m) = SESSION_CHECK_TOTAL.get() {
+        m.with_label_values(&[outcome]).inc();
+    }
+}
+
 /// Register `noetl_gateway_auth_bypass_enabled` — 1 when `GATEWAY_AUTH_BYPASS`
 /// is on, meaning the gateway accepts ANY session token and injects a synthetic
 /// `user_id: 0` context.
@@ -663,6 +727,56 @@ async fn emit_directives_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every declared auth outcome must be pinned AND actually recorded
+    /// somewhere, and every branch of the middleware must record exactly once.
+    ///
+    /// The failure this guards is asymmetric instrumentation: counting only the
+    /// failures makes the RATE meaningless, because a spike in
+    /// `invalid_or_expired` is only interpretable against `ok`.  That is the
+    /// whole reason these exist rather than the pre-existing warns.
+    #[test]
+    fn every_auth_outcome_is_instrumented_and_pinned() {
+        use prometheus::{Encoder, TextEncoder};
+        let registry = Registry::new();
+        register_auth_outcome_metrics(&registry).expect("register");
+        let mut buf = Vec::new();
+        TextEncoder::new().encode(&registry.gather(), &mut buf).expect("encode");
+        let text = String::from_utf8(buf).expect("utf8");
+
+        for (metric, outcomes) in [
+            ("noetl_gateway_login_total", &LOGIN_OUTCOMES[..]),
+            ("noetl_gateway_session_check_total", &SESSION_CHECK_OUTCOMES[..]),
+        ] {
+            for o in outcomes {
+                assert!(
+                    text.lines().any(|l| l.starts_with(&format!("{metric}{{"))
+                        && l.contains(&format!("outcome=\"{o}\""))),
+                    "{metric}{{outcome={o}}} must be pinned at 0"
+                );
+            }
+        }
+
+        // Each outcome must appear at a real call site, not only in the const.
+        let auth_mod = include_str!("../auth/mod.rs");
+        for o in LOGIN_OUTCOMES {
+            assert!(
+                auth_mod.contains(&format!("record_login(\"{o}\")")),
+                "login outcome {o} is declared but never recorded"
+            );
+        }
+        let middleware = include_str!("../auth/middleware.rs");
+        for o in SESSION_CHECK_OUTCOMES {
+            assert!(
+                middleware.contains(&format!("record_session_check(\"{o}\")")),
+                "session-check outcome {o} is declared but never recorded"
+            );
+        }
+        // The success paths specifically — counting only failures would make
+        // the rate uninterpretable.
+        assert!(auth_mod.contains("record_login(\"succeeded\")"));
+        assert!(middleware.contains("record_session_check(\"ok\")"));
+    }
 
     /// The bypass gauge must be present in BOTH states.
     ///
