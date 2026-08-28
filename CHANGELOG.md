@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.2](https://github.com/noetl/gateway/compare/v3.12.1...v3.12.2) (2026-08-28)
+
+### Bug Fixes
+
+* **event-feed:** delete the dead EventSourceMode instead of hardening it ([2ca8fa0](https://github.com/noetl/gateway/commit/2ca8fa03b1a04e30975bc52a1c3206cdcf24704d)), closes [noetl/ai-meta#243](https://github.com/noetl/ai-meta/issues/243) [noetl/ai-meta#242](https://github.com/noetl/ai-meta/issues/242) [noetl/ai-meta#243](https://github.com/noetl/ai-meta/issues/243)
+
 ## [3.12.1](https://github.com/noetl/gateway/compare/v3.12.0...v3.12.1) (2026-08-05)
 
 ### Bug Fixes
