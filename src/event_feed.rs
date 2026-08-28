@@ -13,12 +13,18 @@
 //!
 //! - `NOETL_EVENT_SOURCE` is **read by nothing**. It is still set to `ehdb` on
 //!   the prod Deployment, where it has no effect.
-//! - [`EventSourceMode`] below is unused outside this module —
-//!   [`EventSourceMode::from_env_value`] is called only from this file's own
-//!   tests. Its `Nats` variant describes a path that no longer exists.
+//! - The `EventSourceMode` enum that used to sit here is **gone**
+//!   (noetl/ai-meta#243). It was unreachable — `from_env_value` was called only
+//!   from this file's own tests — and its catch-all `_ => Nats` was the
+//!   gateway's last dead-default, laundering unset / typo / stale into a
+//!   transport that no longer exists. Hardening a parser nothing calls would
+//!   have been theatre; the honest fix for unreachable code is to remove it.
+//!   `the_feed_listener_has_no_mode_branch` keeps it from coming back.
 //!
-//! Whether to delete the enum or re-wire it is a disposition decision tracked
-//! on noetl/ai-meta#242; it is left in place rather than removed silently.
+//! ⚠ The disposition note here previously pointed at noetl/ai-meta#242. That
+//! issue is closed and is about metric recorders with no callers — a different
+//! finding of the same family, but not this one. Corrected rather than left as a
+//! dangling reference to a closed issue.
 //!
 //! **Why a hand-rolled SSE reader instead of depending on `ehdb-feed`.** The
 //! gateway is a thin HTTP edge; pulling in the feed crate would drag the whole
@@ -52,35 +58,6 @@ use tokio::net::TcpStream;
 
 use crate::connection_hub::ConnectionHub;
 use crate::request_store::RequestStore;
-
-/// Which transport feeds the gateway's lifecycle SSE forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EventSourceMode {
-    /// Core NATS subscribe on `noetl.events.>` — today's path (default).
-    #[default]
-    Nats,
-    /// The EHDB events feed's SSE broadcast face.
-    Ehdb,
-}
-
-impl EventSourceMode {
-    /// Parse an event-source value; anything unrecognised is `nats`.
-    ///
-    /// ⚠ The safety property this comment used to claim — *"a typo can never
-    /// silently take the SPA's live updates off their working path"* — no
-    /// longer holds, because `nats` is not a working path. NATS was deleted at
-    /// T5. Nothing calls this outside the tests below; see the module header.
-    pub fn from_env_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "ehdb" => Self::Ehdb,
-            _ => Self::Nats,
-        }
-    }
-
-    pub fn is_ehdb(self) -> bool {
-        matches!(self, Self::Ehdb)
-    }
-}
 
 /// One parsed SSE frame: the feed cursor and the event payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,15 +232,58 @@ async fn forward(payload: &Value, request_store: &Arc<RequestStore>, connection_
 mod tests {
     use super::*;
 
+    /// The listener has exactly one source, and no env var selects it.
+    ///
+    /// This replaces `mode_defaults_to_nats_and_falls_back_safely`, which
+    /// asserted that an unrecognised `NOETL_EVENT_SOURCE` fell back to `nats` —
+    /// a property that stopped being a safety net when T5 deleted NATS, and that
+    /// was being asserted about a function nothing called.
+    ///
+    /// Guards the replacement invariant by COUNTING, so reintroducing a mode
+    /// branch fails here rather than passing silently: `start_ehdb_feed_listener`
+    /// must remain the only entry point, gated on an address rather than a mode.
     #[test]
-    fn mode_defaults_to_nats_and_falls_back_safely() {
-        assert_eq!(EventSourceMode::from_env_value(""), EventSourceMode::Nats);
-        assert_eq!(EventSourceMode::from_env_value("nats"), EventSourceMode::Nats);
-        assert_eq!(EventSourceMode::from_env_value("ehdb"), EventSourceMode::Ehdb);
-        assert_eq!(EventSourceMode::from_env_value(" EHDB "), EventSourceMode::Ehdb);
-        // A typo must not take the SPA's live updates off their working path.
-        assert_eq!(EventSourceMode::from_env_value("ehbd"), EventSourceMode::Nats);
-        assert_eq!(EventSourceMode::default(), EventSourceMode::Nats);
+    fn the_feed_listener_has_no_mode_branch() {
+        // Scan only the NON-TEST half of the file.
+        //
+        // `include_str!` pulls in this test too, so a guard that searches the
+        // whole file matches its own text: first on the identifier in the doc
+        // comment, then — after that was "fixed" — on the needle written into the
+        // assertion itself. Two self-matches in a row is the lesson: a guard must
+        // search code it does not itself contain.
+        let src = include_str!("event_feed.rs");
+        let code = src
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module; the split marker must exist");
+        assert!(
+            !code.contains("enum EventSourceMode"),
+            "the dead mode enum is back; if a second source is genuinely needed it \
+             needs a strict parser (noetl/ai-meta#243), not a catch-all"
+        );
+        assert!(
+            !code.contains("_ => Self::Nats"),
+            "a catch-all fallback to a transport deleted at T5 is back \
+             (noetl/ai-meta#243)"
+        );
+        let main_src = include_str!("main.rs");
+        assert!(
+            main_src.contains("start_ehdb_feed_listener"),
+            "the listener must still be started"
+        );
+        assert!(
+            !main_src.contains("NOETL_EVENT_SOURCE"),
+            "NOETL_EVENT_SOURCE must stay unread — it is set on the prod \
+             Deployment and has no effect (noetl/ai-meta#243)"
+        );
+
+        // Positive control: the comment-stripping filter must not be what makes
+        // the assertions above pass. If this fails, the filter ate real code and
+        // the guard is measuring nothing.
+        assert!(
+            code.contains("start_ehdb_feed_listener"),
+            "the code filter removed real code — the guard above is vacuous"
+        );
     }
 
     #[test]
