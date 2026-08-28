@@ -1,0 +1,53 @@
+# noetl/ai-meta#232 — actually run the tests.
+#
+# Before this workflow, no GitHub Actions workflow in this repo ran `cargo test`
+# (nor in noetl/server, noetl/worker, noetl/tools, noetl/cli — all now fixed).
+# `release.yml` and `build_on_release.yml` build and publish; nothing executed a
+# test.
+#
+# A guard no runner executes cannot fail, and a guard that cannot fail is
+# indistinguishable from one that was never written.  Not hypothetical: this repo
+# carries `the_feed_listener_has_no_mode_branch`, which exists to fail if the dead
+# event-source mode enum comes back (noetl/ai-meta#243), and the same workflow on
+# noetl/worker immediately surfaced a test that had been asserting a defect closed
+# some time earlier (noetl/ai-meta#209).
+#
+# Deliberately NOT here:
+#   * `cargo fmt --check` — these crates are formatted with rustfmt 1.9.0 and a
+#     different version reformats large parts of the tree.
+#   * `-D warnings` — pre-existing clippy warnings would make this start red for
+#     reasons no individual PR caused.  Clippy runs and stays visible.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # --all-targets, not the default: plain cargo build/test skip integration
+      # tests and cfg(test)-only code, so a binary can be broken while the lib
+      # compiles clean.
+      - name: build (all targets)
+        run: cargo build --all-targets --locked
+
+      - name: test
+        run: cargo test --all-targets --locked
+
+      - name: clippy (visible, non-gating)
+        run: cargo clippy --all-targets --locked || true
