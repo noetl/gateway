@@ -316,3 +316,110 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
         }
     }
 }
+
+#[cfg(test)]
+mod catalog_surface_tests {
+    //! Guards for the catalog API surface reaching the NoETL server through the
+    //! gateway (noetl/ai-meta catalog programme).
+    //!
+    //! The proxy is generic — `/noetl/{*path}` → `{NOETL_BASE_URL}/api/{path}` —
+    //! so the catalog endpoints need no per-route wiring. That is convenient and
+    //! it is also exactly why it needs a test: "it should work because the proxy
+    //! is generic" is an assumption about a mapping nothing asserts, and the
+    //! catalog surface grew three new endpoints that a reader would reasonably
+    //! expect to find registered somewhere.
+
+    /// The upstream URL the proxy builds, mirrored from `proxy_request`.
+    ///
+    /// Kept in step by the structural test below, which fails if the real
+    /// format string changes.
+    fn upstream(base: &str, path: &str) -> String {
+        format!("{}/api/{}", base, path)
+    }
+
+    /// Every catalog endpoint the CLI and operators call maps to the server's
+    /// `/api/*` path unchanged.
+    #[test]
+    fn the_catalog_surface_maps_onto_the_server_api() {
+        let base = "http://noetl-server:8082";
+        for (incoming, expected) in [
+            ("catalog/register", "http://noetl-server:8082/api/catalog/register"),
+            // The bulk-load endpoint the CLI's `catalog load` uses.
+            (
+                "catalog/register/batch",
+                "http://noetl-server:8082/api/catalog/register/batch",
+            ),
+            ("catalog/list", "http://noetl-server:8082/api/catalog/list"),
+            (
+                "catalog-log/backfill",
+                "http://noetl-server:8082/api/catalog-log/backfill",
+            ),
+            (
+                "catalog-log/coverage",
+                "http://noetl-server:8082/api/catalog-log/coverage",
+            ),
+        ] {
+            assert_eq!(upstream(base, incoming), expected, "mapping for {incoming}");
+        }
+    }
+
+    /// A nested path keeps every segment.
+    ///
+    /// `catalog/register/batch` has two segments after `catalog`; a proxy that
+    /// took only the first would silently route a bulk load to the single
+    /// register endpoint — which would still return 200, having registered one
+    /// item instead of N.
+    #[test]
+    fn nested_paths_keep_every_segment() {
+        assert_eq!(
+            upstream("http://s", "catalog/register/batch"),
+            "http://s/api/catalog/register/batch"
+        );
+        assert_ne!(
+            upstream("http://s", "catalog/register/batch"),
+            upstream("http://s", "catalog/register"),
+            "a bulk load must not collapse onto the single-register endpoint"
+        );
+    }
+
+    /// ⭐ The mirror above must match the real mapping.
+    ///
+    /// Counting the format string in the source, so a change to how the upstream
+    /// URL is built fails here rather than leaving these tests asserting a
+    /// mapping the code no longer performs.
+    #[test]
+    fn the_mirrored_mapping_matches_the_real_one() {
+        let src = include_str!("proxy.rs");
+        let code = src
+            .split_once("\n#[cfg(test)]")
+            .map(|(above, _)| above)
+            .unwrap_or(src);
+        assert!(
+            code.contains(r#"format!("{}/api/{}", base, path)"#),
+            "proxy_request no longer builds the upstream URL as `{{base}}/api/{{path}}`; \
+             the mapping asserted by these tests is stale"
+        );
+    }
+
+    /// ⚠ The proxy is behind auth, and must stay there.
+    ///
+    /// It forwards EVERY `/api/*` path, including the privileged catalog-log and
+    /// credential surfaces. Losing the auth layer would expose them all at once,
+    /// and nothing about the proxy code itself would look different.
+    #[test]
+    fn the_proxy_routes_are_auth_gated_in_main() {
+        let main = include_str!("main.rs");
+        let at = main
+            .find("let proxy_routes = Router::new()")
+            .expect("proxy_routes must exist");
+        let tail = &main[at..];
+        let end = tail.find(".with_state(").expect("proxy_routes must be finished");
+        let block = &tail[..end];
+        assert!(
+            block.contains("auth::middleware::auth_middleware"),
+            "the /noetl proxy is no longer auth-gated; it forwards every /api/* \
+             path, so this would expose the whole server API at once:\n{block}"
+        );
+    }
+}
+
