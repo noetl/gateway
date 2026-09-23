@@ -34,6 +34,7 @@ mod proxy;
 mod request_store;
 mod result_ext;
 mod session_cache;
+mod scoped_apps;
 mod sharding;
 mod sse;
 
@@ -362,8 +363,15 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(proxy_state);
 
-    // Main gateway app
-    let app = Router::new()
+    // A configured scoped-app gateway is an isolated user-facing surface.
+    // Generic proxy, GraphQL, SSE and push ingress are intentionally not mounted.
+    let scoped = scoped_apps::ScopedApps::from_env(&config.noetl.base_url)?;
+    let app = if let Some(state) = scoped {
+        Router::new().merge(public_routes).merge(metrics_routes)
+            .merge(scoped_apps::routes(state).route_layer(middleware::from_fn_with_state(
+                auth_state.clone(), auth::middleware::auth_middleware)))
+    } else {
+        Router::new()
         .merge(public_routes)
         .merge(sharding_diagnostic_routes)
         .merge(sse_routes)
@@ -371,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(metrics_routes)
         .merge(graphql_routes)
         .merge(proxy_routes)
-        .layer(cors);
+    }.layer(cors);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     tracing::info!(%addr, noetl_base = %config.noetl.base_url, "starting gateway server http://localhost:{}", config.server.port);
