@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Main gateway configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct GatewayConfig {
     /// Server configuration
@@ -176,21 +176,6 @@ pub struct AuthPlaybooksConfig {
 }
 
 // Default implementations
-
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            noetl: NoetlConfig::default(),
-            kv: KvConfig::default(),
-            cors: CorsConfig::default(),
-            auth_playbooks: AuthPlaybooksConfig::default(),
-            transport: TransportConfig::default(),
-            auth0: Auth0Config::default(),
-            internal_api_token: None,
-        }
-    }
-}
 
 impl Default for ServerConfig {
     fn default() -> Self {
