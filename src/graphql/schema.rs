@@ -125,7 +125,7 @@ impl MutationRoot {
         // Store pending request for callback routing
         let final_request_id = if let Some((rid, cid, store)) = request_id {
             // Get session token from context if available
-            let session_token = ctx.data::<String>().map(|s| s.clone()).unwrap_or_default();
+            let session_token = ctx.data::<String>().cloned().unwrap_or_default();
 
             let pending = PendingRequest {
                 client_id: cid,
@@ -205,7 +205,7 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         let final_request_id = if let Some((rid, cid, store)) = request_id {
-            let session_token = ctx.data::<String>().map(|s| s.clone()).unwrap_or_default();
+            let session_token = ctx.data::<String>().cloned().unwrap_or_default();
 
             let pending = PendingRequest {
                 client_id: cid,

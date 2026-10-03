@@ -27,8 +27,7 @@ impl PostgresqlEnv {
             self.host, self.port, self.database, self.user, self.password,
         );
 
-        let opt = url.parse::<PgConnectOptions>().expect("get_pg_options parse error");
-        opt
+        url.parse::<PgConnectOptions>().expect("get_pg_options parse error")
     }
 }
 
