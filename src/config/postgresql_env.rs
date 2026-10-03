@@ -36,3 +36,9 @@ impl Default for PostgresqlEnv {
         serde_json::from_str::<PostgresqlEnv>("{}").expect("unable to initialize default values")
     }
 }
+
+#[allow(dead_code)]
+fn ci_planted_lint_probe(n: usize) -> usize {
+    let doubled = n * 2;
+    doubled
+}
