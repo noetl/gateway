@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.3](https://github.com/noetl/gateway/compare/v3.12.2...v3.12.3) (2026-10-04)
+
+### Bug Fixes
+
+* drop the unused base64-compat dep, whose lib is also named `base64` ([c56133f](https://github.com/noetl/gateway/commit/c56133f66df1b267e5810b791aa05d5548fb91e5)), closes [noetl/ai-meta#398](https://github.com/noetl/ai-meta/issues/398) [#1](https://github.com/noetl/gateway/issues/1) [#2](https://github.com/noetl/gateway/issues/2) [noetl/ai-meta#398](https://github.com/noetl/ai-meta/issues/398)
+
 ## [3.12.2](https://github.com/noetl/gateway/compare/v3.12.1...v3.12.2) (2026-08-28)
 
 ### Bug Fixes
