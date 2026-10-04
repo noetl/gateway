@@ -17,6 +17,13 @@ pub fn is_auth_bypass_enabled() -> bool {
 }
 
 /// Middleware to validate session token and inject user context
+// `Result<Response, Response>` is axum's own middleware shape: the error arm IS a
+// response, which is why it is as large as the ok arm. Boxing it, as clippy
+// suggests, would mean `Result<Response, Box<Response>>` -- breaking the idiom and
+// forcing an unbox at every call site to save 128 bytes on a path that already
+// allocates a response body. Scoped here rather than allow-listed in the workflow,
+// so a DIFFERENT oversized Err still fails the gate (noetl/ai-meta#398).
+#[allow(clippy::result_large_err)]
 pub async fn auth_middleware(
     State(state): State<Arc<AuthState>>,
     mut request: Request,
