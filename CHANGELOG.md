@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.13.0](https://github.com/noetl/gateway/compare/v3.12.3...v3.13.0) (2026-10-09)
+
+### Features
+
+* register the gateway in the server's runtime registry ([255ca6f](https://github.com/noetl/gateway/commit/255ca6f86a71867b4d66a1d2855e7da5761de68a)), closes [noetl/ai-meta#455](https://github.com/noetl/ai-meta/issues/455) [noetl/ai-meta#455](https://github.com/noetl/ai-meta/issues/455)
+
 ## [3.12.3](https://github.com/noetl/gateway/compare/v3.12.2...v3.12.3) (2026-10-04)
 
 ### Bug Fixes
