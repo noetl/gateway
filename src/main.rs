@@ -29,6 +29,7 @@ mod event_feed;
 mod graphql;
 mod ingress;
 mod noetl_client;
+mod runtime_registration;
 mod playbook_state;
 mod proxy;
 mod request_store;
@@ -85,6 +86,10 @@ async fn main() -> anyhow::Result<()> {
 
     let noetl = NoetlClient::new(config.noetl.base_url.clone());
     let noetl_arc = Arc::new(noetl);
+
+    // noetl/ai-meta#455 P2 — announce this gateway to the server's runtime registry and
+    // keep the lease renewed. Fail-soft: it never gates serving.
+    runtime_registration::spawn(noetl_arc.clone());
 
     // Callback manager using NATS pub/sub
     let callback_manager = Arc::new(CallbackManager::new(Some(config.kv.callback_subject_prefix.clone())));

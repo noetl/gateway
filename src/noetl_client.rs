@@ -38,6 +38,47 @@ impl NoetlClient {
         &self.base_url
     }
 
+    /// Register (or renew) this gateway in the server's D8 runtime registry.
+    ///
+    /// noetl/ai-meta#455 P2 — the `Gateway` kind. Before this the gateway identified
+    /// itself to the server in no way at all: `discover(Gateway)` was permanently empty,
+    /// so the registry could describe every component except the one in front of them.
+    ///
+    /// Returns the lease TTL the server granted, in seconds. ⭐ Read from the response
+    /// rather than configured here: a TTL duplicated on both sides is a representation
+    /// that drifts the moment one of them changes, and the heartbeat interval derived from
+    /// a stale copy would silently expire the lease it was meant to renew.
+    pub async fn register_runtime(
+        &self,
+        kind: &str,
+        id: &str,
+        contract: &str,
+    ) -> anyhow::Result<u64> {
+        let url = format!("{}/api/runtime/register", self.base_url.trim_end_matches('/'));
+        let res = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({ "kind": kind, "id": id, "contract": contract }))
+            .send()
+            .await
+            .context("register_runtime: send")?;
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("register_runtime: {} - {}", status, body));
+        }
+        let ttl = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("ttl_secs").and_then(|t| t.as_u64()))
+            .ok_or_else(|| {
+                // ⚠ Not defaulted. A missing TTL means the response is not the shape this
+                // expects, and inventing one would pick a heartbeat interval unrelated to
+                // the lease actually granted.
+                anyhow::anyhow!("register_runtime: response carried no ttl_secs: {body}")
+            })?;
+        Ok(ttl)
+    }
+
     /// Execute a playbook by path.
     /// POST /api/execute with { path, workload, resource_kind }
     pub async fn execute_playbook(&self, path: &str, args: serde_json::Value) -> anyhow::Result<ExecutionResponse> {
