@@ -8,6 +8,9 @@
 //! - executePlaybook mutation (used by auth module for login/validate playbooks)
 //! - rerunExecution mutation (canonical execution rerun flow)
 //! - proxyRequest mutation (generic API proxy for clients preferring GraphQL)
+//!
+//! Who may call which mutation is `crate::authorization`: end users only
+//! `executePlaybook` of an allowlisted playbook; operators everything.
 
 use async_graphql::{Context, EmptySubscription, Enum, Json, Object, Result as GqlResult, Schema};
 use std::sync::Arc;
@@ -15,6 +18,7 @@ use uuid::Uuid;
 
 use super::types::*;
 use crate::auth::types::UserContext;
+use crate::authorization::{ExecutionOwners, Policy};
 use crate::config::GatewayConfig;
 use crate::noetl_client::NoetlClient;
 use crate::request_store::{PendingRequest, RequestStore};
@@ -52,6 +56,60 @@ fn bind_caller_identity(ctx: &Context<'_>, args: &mut serde_json::Value, target:
             Err(async_graphql::Error::new(e.to_string()))
         }
     }
+}
+
+fn policy(ctx: &Context<'_>) -> Arc<Policy> {
+    ctx.data_opt::<Arc<Policy>>().cloned().unwrap_or_default()
+}
+
+fn not_authorized() -> async_graphql::Error {
+    async_graphql::Error::new("not authorized")
+}
+
+/// `crate::authorization` for `executePlaybook`: operators may start anything,
+/// end users only an allowlisted playbook.
+fn authorize_execute(ctx: &Context<'_>, name: &str, kind: &str) -> GqlResult<()> {
+    let Some(user) = ctx.data_opt::<UserContext>() else {
+        crate::ingress::record_route_authz("denied");
+        return Err(not_authorized());
+    };
+    let policy = policy(ctx);
+    if policy.is_operator(user) {
+        crate::ingress::record_route_authz("operator");
+        Ok(())
+    } else if policy.may_execute(user, name, kind) {
+        crate::ingress::record_route_authz("end_user_allowed");
+        Ok(())
+    } else {
+        crate::ingress::record_route_authz("denied");
+        tracing::warn!(user_id = user.user_id, target = name, kind = kind, "executePlaybook refused");
+        Err(not_authorized())
+    }
+}
+
+/// `crate::authorization` for mutations only operators may call.
+fn require_operator(ctx: &Context<'_>, what: &str) -> GqlResult<()> {
+    match ctx.data_opt::<UserContext>() {
+        Some(user) if policy(ctx).is_operator(user) => {
+            crate::ingress::record_route_authz("operator");
+            Ok(())
+        }
+        user => {
+            crate::ingress::record_route_authz("denied");
+            tracing::warn!(user_id = user.map(|u| u.user_id).unwrap_or(0), what = what, "operator-only mutation refused");
+            Err(not_authorized())
+        }
+    }
+}
+
+/// Remember who started `execution_id`, so they can poll and cancel it.
+async fn record_owner(ctx: &Context<'_>, execution_id: &str) {
+    crate::authorization::record_owner(
+        ctx.data_opt::<Arc<ExecutionOwners>>(),
+        execution_id,
+        ctx.data_opt::<UserContext>(),
+    )
+    .await;
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -120,6 +178,7 @@ impl MutationRoot {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
         let catalog_kind = resource_kind.unwrap_or(ExecutableResourceKind::Playbook).as_str();
+        authorize_execute(ctx, &name, catalog_kind)?;
         bind_caller_identity(ctx, &mut args, &name, false)?;
 
         // If client_id is provided, set up async callback
@@ -156,6 +215,7 @@ impl MutationRoot {
             .execute_catalog_entry(&name, args, catalog_kind)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        record_owner(ctx, &result.execution_id).await;
 
         // Store pending request for callback routing
         let final_request_id = if let Some((rid, cid, store)) = request_id {
@@ -208,6 +268,7 @@ impl MutationRoot {
     ) -> GqlResult<ExecuteResult> {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
+        require_operator(ctx, "rerunExecution")?;
         // Forced: a rerun replays the source execution's stored workload, so an
         // identity this request omits would otherwise be the source's.
         bind_caller_identity(ctx, &mut args, &format!("rerun:{}", execution_id), true)?;
@@ -241,6 +302,7 @@ impl MutationRoot {
             .rerun_execution(&execution_id, args)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        record_owner(ctx, &result.execution_id).await;
 
         let final_request_id = if let Some((rid, cid, store)) = request_id {
             let session_token = ctx.data::<String>().cloned().unwrap_or_default();
@@ -301,6 +363,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         #[graphql(desc = "Proxy request parameters")] input: ProxyRequestInput,
     ) -> GqlResult<ProxyResponse> {
+        require_operator(ctx, "proxyRequest")?;
         let client = ctx.data::<Arc<NoetlClient>>()?;
 
         let body = input.body.map(|j| j.0);

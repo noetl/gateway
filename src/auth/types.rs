@@ -12,4 +12,8 @@ pub struct UserContext {
     /// cached before this field existed and in dev auth-bypass.
     #[serde(default)]
     pub auth0_sub: Option<String>,
+    /// Role names (`auth.user_roles`) of the session's user. Decides which
+    /// routes the session may reach; see `crate::authorization`.
+    #[serde(default)]
+    pub roles: Vec<String>,
 }

@@ -268,6 +268,7 @@ mod tests {
             display_name: "Test".into(),
             session_token: "session-one".into(),
             auth0_sub: None,
+            roles: Vec::new(),
         }
     }
     fn state() -> ScopedApps {
@@ -404,6 +405,7 @@ mod live_tests {
             display_name: "Synthetic staff".into(),
             session_token: "synthetic-session".into(),
             auth0_sub: None,
+            roles: Vec::new(),
         };
         let app = routes(s).layer(Extension(user));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

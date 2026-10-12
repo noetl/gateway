@@ -137,12 +137,23 @@ pub const LOGIN_OUTCOMES: [&str; 3] = ["succeeded", "callback_failed", "not_auth
 /// "nobody is asking" look identical without this.
 pub const AUTHZ_OUTCOMES: [&str; 3] = ["allowed", "denied", "backend_error"];
 
+/// Outcomes of the route authorization in `crate::authorization`.
+pub const ROUTE_AUTHZ_OUTCOMES: [&str; 6] = [
+    "operator",
+    "end_user_allowed",
+    "denied",
+    "not_owner",
+    "owner_unverifiable",
+    "owner_record_failed",
+];
+
 pub const SESSION_CHECK_OUTCOMES: [&str; 5] =
     ["ok", "missing_token", "invalid_or_expired", "validation_error", "bypass"];
 
 static LOGIN_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
 static SESSION_CHECK_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
 static AUTHZ_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
+static ROUTE_AUTHZ_TOTAL: std::sync::OnceLock<IntCounterVec> = std::sync::OnceLock::new();
 
 /// Register both auth-outcome counters and pin every series at 0.
 pub fn register_auth_outcome_metrics(registry: &Registry) -> anyhow::Result<()> {
@@ -184,7 +195,27 @@ pub fn register_auth_outcome_metrics(registry: &Registry) -> anyhow::Result<()> 
         authz.with_label_values(&[o]).inc_by(0);
     }
     let _ = AUTHZ_TOTAL.set(authz);
+
+    let route = IntCounterVec::new(
+        Opts::new(
+            "noetl_gateway_route_authz_total",
+            "Proxy and GraphQL route authorization decisions by outcome.",
+        ),
+        &["outcome"],
+    )?;
+    registry.register(Box::new(route.clone()))?;
+    for o in ROUTE_AUTHZ_OUTCOMES {
+        route.with_label_values(&[o]).inc_by(0);
+    }
+    let _ = ROUTE_AUTHZ_TOTAL.set(route);
     Ok(())
+}
+
+/// Record one route authorization decision (`crate::authorization`).
+pub fn record_route_authz(outcome: &str) {
+    if let Some(m) = ROUTE_AUTHZ_TOTAL.get() {
+        m.with_label_values(&[outcome]).inc();
+    }
 }
 
 /// Record one authorization outcome.
@@ -925,6 +956,7 @@ mod tests {
             ("noetl_gateway_login_total", &LOGIN_OUTCOMES[..]),
             ("noetl_gateway_session_check_total", &SESSION_CHECK_OUTCOMES[..]),
             ("noetl_gateway_authz_total", &AUTHZ_OUTCOMES[..]),
+            ("noetl_gateway_route_authz_total", &ROUTE_AUTHZ_OUTCOMES[..]),
         ] {
             for o in outcomes {
                 assert!(

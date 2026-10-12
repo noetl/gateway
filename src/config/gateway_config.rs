@@ -100,6 +100,11 @@ pub struct KvConfig {
     pub request_bucket: String,
     /// Request TTL in seconds (default: 1800 = 30 minutes)
     pub request_ttl_secs: u64,
+    /// K/V bucket recording who started each execution (default: "execution_owners")
+    pub execution_owner_bucket: String,
+    /// How long an end user may poll or cancel an execution they started, in
+    /// seconds (default: 86400 = 24 hours)
+    pub execution_owner_ttl_secs: u64,
 }
 
 /// Transport configuration for SSE/WebSocket
@@ -205,6 +210,8 @@ impl Default for KvConfig {
             session_cache_ttl_secs: 300, // 5 minutes
             request_bucket: "requests".to_string(),
             request_ttl_secs: 1800, // 30 minutes
+            execution_owner_bucket: "execution_owners".to_string(),
+            execution_owner_ttl_secs: 86400, // 24 hours
         }
     }
 }
@@ -335,6 +342,14 @@ impl GatewayConfig {
         if let Ok(val) = std::env::var("NOETL_KV_REQUEST_TTL_SECS") {
             if let Ok(secs) = val.parse() {
                 self.kv.request_ttl_secs = secs;
+            }
+        }
+        if let Ok(val) = std::env::var("NOETL_KV_EXECUTION_OWNER_BUCKET") {
+            self.kv.execution_owner_bucket = val;
+        }
+        if let Ok(val) = std::env::var("NOETL_KV_EXECUTION_OWNER_TTL_SECS") {
+            if let Ok(secs) = val.parse() {
+                self.kv.execution_owner_ttl_secs = secs;
             }
         }
 

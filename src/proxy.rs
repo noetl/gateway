@@ -10,6 +10,8 @@
 //! Usage:
 //! - `/noetl/*path` - Forwards to `{NOETL_BASE_URL}/api/*path`
 //! - Requires valid session token in Authorization header
+//! - Operator sessions reach every path; end-user sessions only the execution
+//!   routes for executions they started (`crate::authorization`)
 
 use axum::{
     body::Body,
@@ -19,6 +21,7 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::authorization::{ExecutionOwners, Policy, ProxyAccess};
 use crate::noetl_client::NoetlClient;
 use crate::sharding::{
     extract_execution_id_from_body, extract_execution_id_from_path,
@@ -39,6 +42,11 @@ pub struct ProxyState {
     /// `src/sharding.rs` for the routing semantics.
     pub shard_map: ShardMap,
     pub http_client: reqwest::Client,
+    /// Which paths a session may reach (`crate::authorization`).
+    pub policy: Arc<Policy>,
+    /// Who started each execution. `None` refuses every end-user execution
+    /// route: ownership that cannot be checked is not assumed.
+    pub owners: Option<Arc<ExecutionOwners>>,
 }
 
 impl ProxyState {
@@ -62,7 +70,16 @@ impl ProxyState {
                 .timeout(std::time::Duration::from_secs(300)) // 5 min timeout for long operations
                 .build()
                 .unwrap_or_default(),
+            policy: Arc::new(Policy::default()),
+            owners: None,
         }
+    }
+
+    /// Set the authorization policy and the execution-owner store.
+    pub fn with_authorization(mut self, policy: Arc<Policy>, owners: Option<Arc<ExecutionOwners>>) -> Self {
+        self.policy = policy;
+        self.owners = owners;
+        self
     }
 
     /// Resolve the upstream base URL for a proxied request.
@@ -171,6 +188,63 @@ pub async fn proxy_options() -> impl IntoResponse {
     StatusCode::NO_CONTENT
 }
 
+fn refuse(status: StatusCode, error: &str) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::json!({ "error": error }).to_string()))
+        .unwrap()
+}
+
+/// Apply `crate::authorization` to one proxied request, before its body is
+/// read. A route outside an end user's allowlist is 403. An execution the
+/// caller did not start is 404, the same as one that does not exist, so ids
+/// cannot be probed. Returns the refusal, or `None` to forward.
+async fn authorize(
+    state: &ProxyState,
+    path: &str,
+    method: &Method,
+    parts: &axum::http::request::Parts,
+) -> Option<Response<Body>> {
+    let Some(user) = parts.extensions.get::<crate::auth::types::UserContext>() else {
+        // The auth middleware always sets one; without it there is no caller.
+        crate::ingress::record_route_authz("denied");
+        return Some(refuse(StatusCode::FORBIDDEN, "not authorized"));
+    };
+    let execution_id = match state.policy.proxy_access(user, method, path) {
+        ProxyAccess::Granted => {
+            crate::ingress::record_route_authz("operator");
+            return None;
+        }
+        ProxyAccess::Denied => {
+            crate::ingress::record_route_authz("denied");
+            tracing::warn!(user_id = user.user_id, method = %method, path = path, "proxy route refused");
+            return Some(refuse(StatusCode::FORBIDDEN, "not authorized"));
+        }
+        ProxyAccess::OwnerOnly(id) => id,
+    };
+    let Some(owners) = state.owners.as_ref() else {
+        crate::ingress::record_route_authz("owner_unverifiable");
+        return Some(refuse(StatusCode::SERVICE_UNAVAILABLE, "execution ownership cannot be verified"));
+    };
+    match owners.is_owner(&execution_id, user).await {
+        Ok(true) => {
+            crate::ingress::record_route_authz("end_user_allowed");
+            None
+        }
+        Ok(false) => {
+            crate::ingress::record_route_authz("not_owner");
+            tracing::warn!(user_id = user.user_id, method = %method, path = path, "execution not owned by caller");
+            Some(refuse(StatusCode::NOT_FOUND, "execution not found"))
+        }
+        Err(e) => {
+            crate::ingress::record_route_authz("owner_unverifiable");
+            tracing::error!(path = path, "execution owner lookup failed: {}", e);
+            Some(refuse(StatusCode::SERVICE_UNAVAILABLE, "execution ownership cannot be verified"))
+        }
+    }
+}
+
 /// Core proxy logic that forwards requests to NoETL server.
 async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: Request<Body>) -> Response<Body> {
     // Phase F R3a-2: read the body BEFORE choosing the upstream
@@ -179,6 +253,10 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
     // Split into parts + body so headers stay accessible after
     // the body is consumed.
     let (parts, body) = req.into_parts();
+
+    if let Some(refused) = authorize(&state, path, &method, &parts).await {
+        return refused;
+    }
 
     // Get request body for non-GET methods.
     let body_bytes: Vec<u8> = match method {

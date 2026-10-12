@@ -50,6 +50,7 @@ pub async fn auth_middleware(
             display_name: "Dev User".to_string(),
             session_token: token.to_string(),
             auth0_sub: None,
+            roles: Vec::new(),
         };
         request.extensions_mut().insert(user_context);
         return Ok(next.run(request).await);
@@ -78,6 +79,7 @@ pub async fn auth_middleware(
         display_name: cached.display_name,
         session_token: token.to_string(),
         auth0_sub: cached.auth0_sub,
+        roles: cached.roles,
     };
 
     tracing::info!("Authenticated user: {} ({})", user_context.email, user_context.user_id);
