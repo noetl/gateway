@@ -19,6 +19,11 @@ pub struct CachedSession {
     pub is_active: bool,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// Auth0 subject (`auth.users.auth0_id`) of the session's user. The identity
+    /// user-scoped playbooks act as; see `crate::identity`. `None` for sessions
+    /// cached before this field existed and in dev auth-bypass.
+    #[serde(default)]
+    pub auth0_sub: Option<String>,
 }
 
 /// Session cache backed by NATS JetStream K/V

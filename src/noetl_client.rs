@@ -21,6 +21,7 @@ pub struct ValidatedSession {
     pub display_name: String,
     pub expires_at: String,
     pub roles: Vec<String>,
+    pub auth0_sub: Option<String>,
 }
 
 impl NoetlClient {
@@ -296,6 +297,7 @@ impl NoetlClient {
             display_name: user.display_name,
             expires_at: parsed.expires_at.unwrap_or_default(),
             roles: user.roles,
+            auth0_sub: user.auth0_id.filter(|s| !s.trim().is_empty()),
         }))
     }
 
@@ -442,6 +444,8 @@ struct AuthSessionValidateUser {
     display_name: String,
     #[serde(default)]
     roles: Vec<String>,
+    #[serde(default)]
+    auth0_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
