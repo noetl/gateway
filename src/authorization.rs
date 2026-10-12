@@ -39,6 +39,8 @@ pub const DEFAULT_END_USER_PLAYBOOKS: &[&str] = &[
     "muno/playbooks/flights-details",
     "muno/playbooks/profile",
     "travel/playbooks/catalog/calendar/list",
+    // The caller's own thread index (noetl/travel#148); `uid` is bound to the session.
+    "muno/playbooks/threads",
 ];
 
 /// Roles that make a session an operator when `GATEWAY_OPERATOR_ROLES` is unset.
@@ -249,7 +251,7 @@ mod tests {
     #[test]
     fn the_default_end_user_allowlist_is_exactly_the_travel_apps_set() {
         let p = Policy::default();
-        assert_eq!(p.end_user_playbooks.len(), 5);
+        assert_eq!(p.end_user_playbooks.len(), 6);
         let user = session(&[]);
         for name in DEFAULT_END_USER_PLAYBOOKS {
             assert!(p.may_execute(&user, name, "playbook"), "{name}");
