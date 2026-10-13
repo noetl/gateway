@@ -21,6 +21,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 mod auth;
+mod authorization;
+#[cfg(test)]
+mod authorization_routes_tests;
 mod callbacks;
 mod config;
 mod connection_hub;
@@ -224,10 +227,23 @@ async fn main() -> anyhow::Result<()> {
             "Gateway forwarding to single NoETL upstream (no sharding configured)"
         );
     }
-    let proxy_state = Arc::new(ProxyState::with_shards(
-        config.noetl.base_url.clone(),
-        shard_map,
+    // Route authorization (crate::authorization): admin keeps the whole proxy;
+    // a regular user reaches an allowlist, and only executions they started.
+    let policy = Arc::new(authorization::Policy::from_env());
+    tracing::info!(
+        admin_role = authorization::ADMIN_ROLE,
+        user_playbooks = ?policy.user_playbooks,
+        "Route authorization policy"
+    );
+    let execution_owners = Arc::new(authorization::ExecutionOwners::new(
+        config.kv.execution_owner_bucket.clone(),
+        config.kv.execution_owner_ttl_secs,
+        kv_addr,
     ));
+    let proxy_state = Arc::new(
+        ProxyState::with_shards(config.noetl.base_url.clone(), shard_map)
+            .with_authorization(policy.clone(), Some(execution_owners.clone())),
+    );
 
     // Wrap config in Arc for sharing with GraphQL context
     let config_arc = Arc::new(config.clone());
@@ -237,6 +253,8 @@ async fn main() -> anyhow::Result<()> {
         .data(proxy_state.clone())
         .data(request_store.clone())
         .data(config_arc.clone())
+        .data(policy.clone())
+        .data(execution_owners.clone())
         .finish();
 
     // CORS configuration
