@@ -333,6 +333,7 @@ async fn validate_session_via_playbook(
         .map(|s| s.to_string())
         .unwrap_or_else(|| email.clone());
     let roles = parse_roles(user_obj.get("roles"));
+    let auth0_sub = parse_auth0_sub(user_obj);
 
     let expires_at = output
         .get("expires_at")
@@ -346,7 +347,18 @@ async fn validate_session_via_playbook(
         display_name,
         expires_at,
         roles,
+        auth0_sub,
     }))
+}
+
+/// `auth0_id` from a user payload; blank counts as absent.
+fn parse_auth0_sub(user_obj: &serde_json::Value) -> Option<String> {
+    user_obj
+        .get("auth0_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 pub async fn resolve_session_cache_or_db(
@@ -401,6 +413,7 @@ pub async fn resolve_session_cache_or_db(
                 expires_at: found.expires_at,
                 is_active: true,
                 roles: found.roles,
+                auth0_sub: found.auth0_sub,
             };
 
             if let Err(e) = state.session_cache.put(&cached).await {
@@ -664,6 +677,7 @@ async fn finish_login(
         expires_at: expires_at.clone(),
         is_active: true,
         roles: user.roles.clone(),
+        auth0_sub: parse_auth0_sub(user_obj),
     };
     if let Err(e) = state.session_cache.put(&cached_session).await {
         crate::ingress::record_session_cache_failed("after_login");

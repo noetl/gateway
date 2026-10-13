@@ -267,6 +267,7 @@ mod tests {
             email: "test@example.invalid".into(),
             display_name: "Test".into(),
             session_token: "session-one".into(),
+            auth0_sub: None,
         }
     }
     fn state() -> ScopedApps {
@@ -402,6 +403,7 @@ mod live_tests {
             email: "staff@example.invalid".into(),
             display_name: "Synthetic staff".into(),
             session_token: "synthetic-session".into(),
+            auth0_sub: None,
         };
         let app = routes(s).layer(Extension(user));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

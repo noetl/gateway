@@ -27,6 +27,9 @@ mod connection_hub;
 mod ehdb_kv;
 mod event_feed;
 mod graphql;
+mod identity;
+#[cfg(test)]
+mod identity_routes_tests;
 mod ingress;
 mod noetl_client;
 mod runtime_registration;
@@ -345,12 +348,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Protected GraphQL routes (auth required)
     let graphql_routes = Router::new()
-        .route("/graphql", get(graphiql).post_service(GraphQL::new(schema.clone())))
+        .route("/graphql", get(graphiql).post(graphql::graphql_handler))
         .route("/graphql", options(proxy::proxy_options))
         .route_layer(middleware::from_fn_with_state(
             auth_state.clone(),
             auth::middleware::auth_middleware,
         ))
+        .layer(axum::Extension(schema.clone()))
         .with_state(());
 
     // Protected proxy routes - forward authenticated requests to NoETL server

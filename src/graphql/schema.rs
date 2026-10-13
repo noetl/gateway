@@ -14,11 +14,45 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::types::*;
+use crate::auth::types::UserContext;
 use crate::config::GatewayConfig;
 use crate::noetl_client::NoetlClient;
 use crate::request_store::{PendingRequest, RequestStore};
 
 pub type AppSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
+
+/// Overwrite identity variables with the authenticated caller's Auth0 subject
+/// (see `crate::identity`). The caller is the `UserContext` the auth middleware
+/// verified; `graphql_handler` puts it into the request data. With no
+/// `UserContext` at all there is no verified caller, which fails closed exactly
+/// like a session without a subject.
+fn bind_caller_identity(ctx: &Context<'_>, args: &mut serde_json::Value, target: &str, force: bool) -> GqlResult<()> {
+    let user = ctx.data_opt::<UserContext>();
+    let subject = user.and_then(|u| u.auth0_sub.as_deref());
+    let bypass = crate::auth::middleware::is_auth_bypass_enabled();
+    let bound = if force {
+        crate::identity::bind_identity_all(args, subject, bypass)
+    } else {
+        crate::identity::bind_identity(args, subject, bypass)
+    };
+    match bound {
+        Ok(b) => {
+            if !b.overridden.is_empty() {
+                tracing::warn!(
+                    target = target,
+                    user_id = user.map(|u| u.user_id).unwrap_or(0),
+                    vars = ?b.overridden,
+                    "client-supplied identity replaced by the session subject"
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(target = target, "identity-bound execution refused: {}", e);
+            Err(async_graphql::Error::new(e.to_string()))
+        }
+    }
+}
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 enum ExecutableResourceKind {
@@ -86,6 +120,7 @@ impl MutationRoot {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
         let catalog_kind = resource_kind.unwrap_or(ExecutableResourceKind::Playbook).as_str();
+        bind_caller_identity(ctx, &mut args, &name, false)?;
 
         // If client_id is provided, set up async callback
         let request_id = if let Some(cid) = client_id.as_ref() {
@@ -173,6 +208,9 @@ impl MutationRoot {
     ) -> GqlResult<ExecuteResult> {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
+        // Forced: a rerun replays the source execution's stored workload, so an
+        // identity this request omits would otherwise be the source's.
+        bind_caller_identity(ctx, &mut args, &format!("rerun:{}", execution_id), true)?;
 
         // If client_id is provided, set up async callback tracking for rerun.
         let request_id = if let Some(cid) = client_id.as_ref() {

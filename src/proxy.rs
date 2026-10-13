@@ -195,6 +195,32 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
         },
     };
 
+    // Identity variables in an execution-starting body are bound to the caller
+    // the auth middleware verified, never taken from the client (crate::identity).
+    let mut body_rebound = false;
+    let body_bytes: Vec<u8> = if method == Method::POST {
+        let user = parts.extensions.get::<crate::auth::types::UserContext>();
+        let subject = user.and_then(|u| u.auth0_sub.as_deref());
+        let bypass = crate::auth::middleware::is_auth_bypass_enabled();
+        match crate::identity::bind_identity_in_body(path, &body_bytes, subject, bypass) {
+            Ok(Some(rebound)) => {
+                tracing::debug!(path = path, "proxied execution bound to the session identity");
+                body_rebound = true;
+                rebound
+            }
+            Ok(None) => body_bytes,
+            Err(e) => {
+                tracing::warn!(path = path, "identity-bound execution refused: {}", e);
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(Body::from(e.to_string()))
+                    .unwrap();
+            }
+        }
+    } else {
+        body_bytes
+    };
+
     // Phase F R3a + R3a-2: resolve the upstream URL.  When the
     // shard map is empty (current single-replica deployments),
     // returns the default `noetl_base_url`.  When configured,
@@ -240,8 +266,8 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
         }
     };
 
-    // Forward Content-Type header
-    if let Some(content_type) = parts.headers.get(header::CONTENT_TYPE) {
+    // Forward Content-Type header (unless the gateway rewrote the body; set below)
+    if let Some(content_type) = parts.headers.get(header::CONTENT_TYPE).filter(|_| !body_rebound) {
         if let Ok(ct) = content_type.to_str() {
             proxy_req = proxy_req.header(header::CONTENT_TYPE, ct);
         }
@@ -263,6 +289,11 @@ async fn proxy_request(state: Arc<ProxyState>, path: &str, method: Method, req: 
                 proxy_req = proxy_req.header(name.as_str(), v);
             }
         }
+    }
+
+    if body_rebound {
+        // The body is now JSON written by the gateway, whatever the client sent.
+        proxy_req = proxy_req.header(header::CONTENT_TYPE, "application/json");
     }
 
     if !body_bytes.is_empty() {
