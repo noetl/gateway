@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.14.1](https://github.com/noetl/gateway/compare/v3.14.0...v3.14.1) (2026-10-13)
+
+### Bug Fixes
+
+* **auth:** an explicit null identity is anonymous, not a claim to bind ([89e7d48](https://github.com/noetl/gateway/commit/89e7d48eb7340612ab1f46d25cec4a60641a0966))
+
 ## [3.14.0](https://github.com/noetl/gateway/compare/v3.13.0...v3.14.0) (2026-10-13)
 
 ### Features
