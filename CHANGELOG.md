@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.14.0](https://github.com/noetl/gateway/compare/v3.13.0...v3.14.0) (2026-10-13)
+
+### Features
+
+* **auth:** derive playbook caller identity from the verified session ([c9f16dd](https://github.com/noetl/gateway/commit/c9f16dd4257545a28d264d168ea079a6f196456d))
+
 ## [3.13.0](https://github.com/noetl/gateway/compare/v3.12.3...v3.13.0) (2026-10-09)
 
 ### Features
