@@ -205,3 +205,16 @@ async fn proxy_execute_without_a_session_subject_is_forbidden_and_nothing_runs()
     assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
     assert!(seen.lock().unwrap().is_empty());
 }
+
+/// The SPA's calendar read sends `user_uid: null` for a conversation-scoped
+/// calendar; it must reach the playbook still null, or the read is redirected to
+/// `users/{sub}/trips/...` and comes back empty.
+#[tokio::test]
+async fn graphql_execute_keeps_an_anonymous_null_identity() {
+    let (noetl, seen) = mock_noetl().await;
+    let gw = gateway(&noetl, Some(user(Some(CALLER)))).await;
+    let resp = execute_playbook(&gw, json!({"user_uid": null, "thread_path": "chat_threads/t", "trip_id": "x"})).await;
+    assert!(resp.get("errors").is_none(), "{resp}");
+    assert_eq!(workload(&seen, 0)["user_uid"], Value::Null);
+    assert_eq!(workload(&seen, 0)["thread_path"], "chat_threads/t");
+}

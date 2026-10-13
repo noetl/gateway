@@ -44,6 +44,11 @@ pub struct Binding {
 ///
 /// * Variables the request does not carry are left absent: a playbook that does
 ///   not ask for an identity is not handed one.
+/// * A variable that is explicitly `null` claims no identity and is left `null`.
+///   Callers use it to mean "anonymous" (e.g. the SPA's calendar read for a
+///   conversation-scoped calendar), and a null cannot act as anyone. Binding it
+///   would silently turn an anonymous request into a per-user one. Any other
+///   value, including `""`, is a claim and is bound.
 /// * A present variable with no `subject` fails closed. The exception is
 ///   `allow_unbound` (development auth bypass), where nothing is changed.
 /// * Non-object `args` carry no identity and pass through.
@@ -51,7 +56,11 @@ pub fn bind_identity(args: &mut Value, subject: Option<&str>, allow_unbound: boo
     let Value::Object(map) = args else {
         return Ok(Binding::default());
     };
-    let present: Vec<&'static str> = IDENTITY_VARS.iter().copied().filter(|k| map.contains_key(*k)).collect();
+    let present: Vec<&'static str> = IDENTITY_VARS
+        .iter()
+        .copied()
+        .filter(|k| map.get(*k).is_some_and(|v| !v.is_null()))
+        .collect();
     if present.is_empty() {
         return Ok(Binding::default());
     }
@@ -72,9 +81,9 @@ pub fn bind_identity(args: &mut Value, subject: Option<&str>, allow_unbound: boo
 }
 
 /// Like [`bind_identity`], but sets EVERY identity variable whether or not the
-/// request carries it. For reruns: the server replays the SOURCE execution's
-/// stored workload, so an identity the request omits would otherwise be the
-/// source's, not the caller's.
+/// request carries it, `null` included. For reruns: the server replays the
+/// SOURCE execution's stored workload, so an identity the request omits would
+/// otherwise be the source's, not the caller's.
 pub fn bind_identity_all(
     args: &mut Value,
     subject: Option<&str>,
@@ -88,12 +97,17 @@ pub fn bind_identity_all(
         None if allow_unbound => return Ok(Binding::default()),
         None => return Err(IdentityError::NoSubject),
     };
+    let mut binding = Binding::default();
     if let Value::Object(map) = args {
         for key in IDENTITY_VARS {
-            map.entry(key.to_string()).or_insert(Value::Null);
+            if map.get(*key).and_then(Value::as_str) != Some(subject) {
+                binding.overridden.push(key);
+            }
+            map.insert(key.to_string(), Value::String(subject.to_string()));
+            binding.bound.push(key);
         }
     }
-    bind_identity(args, Some(subject), allow_unbound)
+    Ok(binding)
 }
 
 /// Bind identity inside a request body the REST proxy forwards to NoETL.
@@ -198,11 +212,37 @@ mod tests {
 
     #[test]
     fn non_string_and_blank_identities_are_replaced() {
-        for bad in [json!(null), json!(""), json!(7), json!({"x": 1}), json!([ME])] {
+        for bad in [json!(""), json!(7), json!({"x": 1}), json!([ME])] {
             let mut args = json!({"uid": bad});
             bind_identity(&mut args, Some(ME), false).unwrap();
             assert_eq!(args["uid"], ME);
         }
+    }
+
+    /// An explicit `null` is "anonymous", not a claim: it stays null, so a
+    /// conversation-scoped calendar read is not turned into a per-user one, and
+    /// it needs no subject.
+    #[test]
+    fn an_explicit_null_identity_is_left_anonymous() {
+        let mut args = json!({"user_uid": null, "thread_path": "chat_threads/t", "trip_id": "x"});
+        let b = bind_identity(&mut args, Some(ME), false).unwrap();
+        assert_eq!(args["user_uid"], Value::Null);
+        assert!(b.bound.is_empty());
+        let mut args = json!({"user_uid": null});
+        assert!(bind_identity(&mut args, None, false).is_ok(), "no subject needed for an anonymous request");
+        // A null next to a real claim: only the claim is bound.
+        let mut args = json!({"uid": "auth0|someone-else", "user_uid": null});
+        bind_identity(&mut args, Some(ME), false).unwrap();
+        assert_eq!(args["uid"], ME);
+        assert_eq!(args["user_uid"], Value::Null);
+    }
+
+    #[test]
+    fn a_rerun_binds_even_a_null_identity() {
+        let mut args = json!({"user_uid": null});
+        bind_identity_all(&mut args, Some(ME), false).unwrap();
+        assert_eq!(args["user_uid"], ME);
+        assert_eq!(args["uid"], ME);
     }
 
     #[test]
