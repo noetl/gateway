@@ -5,22 +5,22 @@
 //! API on a session's behalf: the REST proxy (`/noetl/{*path}`) and the GraphQL
 //! mutations.
 //!
-//! Two kinds of session:
+//! There are exactly two roles:
 //!
-//! * **Operator** — the session's user holds one of the operator roles
-//!   (`GATEWAY_OPERATOR_ROLES`, default `admin`). The GUI and the CLI's gateway
-//!   mode run as operators and keep the full proxy surface, as before.
-//! * **End user** — everyone else. Deny by default. An end user may:
-//!   - start one of the allowlisted playbooks (`GATEWAY_END_USER_PLAYBOOKS`)
+//! * **Admin** — the session's user holds the `admin` role. The GUI and the
+//!   CLI's gateway mode run as admin and keep the full proxy surface and every
+//!   GraphQL mutation, as before.
+//! * **Regular user** — everyone else. Deny by default. A regular user may:
+//!   - start one of the allowlisted playbooks (`GATEWAY_USER_PLAYBOOKS`)
 //!     through `executePlaybook`;
 //!   - read (`GET executions/{id}`) or cancel (`POST executions/{id}/cancel`)
 //!     an execution THEY started, recorded by [`ExecutionOwners`].
 //!
 //! Nothing else: no other proxy route, no `rerunExecution`, no `proxyRequest`,
-//! no agents.
+//! no agents. Any role other than `admin` grants nothing beyond a regular user.
 //!
-//! Development auth bypass (`GATEWAY_AUTH_BYPASS`) is treated as an operator;
-//! it already accepts any token.
+//! Development auth bypass (`GATEWAY_AUTH_BYPASS`) is treated as admin; it
+//! already accepts any token.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,9 +31,9 @@ use tokio::sync::Mutex;
 
 use crate::auth::types::UserContext;
 
-/// Playbooks an end-user session may start when `GATEWAY_END_USER_PLAYBOOKS`
-/// is unset: the travel apps' complete set.
-pub const DEFAULT_END_USER_PLAYBOOKS: &[&str] = &[
+/// Playbooks a regular user may start when `GATEWAY_USER_PLAYBOOKS` is unset:
+/// the travel apps' complete set.
+pub const DEFAULT_USER_PLAYBOOKS: &[&str] = &[
     "muno/playbooks/itinerary-planner",
     "muno/playbooks/hotel-cards",
     "muno/playbooks/flights-details",
@@ -43,21 +43,19 @@ pub const DEFAULT_END_USER_PLAYBOOKS: &[&str] = &[
     "muno/playbooks/threads",
 ];
 
-/// Roles that make a session an operator when `GATEWAY_OPERATOR_ROLES` is unset.
-pub const DEFAULT_OPERATOR_ROLES: &[&str] = &["admin"];
+/// The one role with broad access. Not configurable: there is no other tier.
+pub const ADMIN_ROLE: &str = "admin";
 
 /// The authorization policy. Built once from the environment at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
-    pub operator_roles: Vec<String>,
-    pub end_user_playbooks: Vec<String>,
+    pub user_playbooks: Vec<String>,
 }
 
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            operator_roles: DEFAULT_OPERATOR_ROLES.iter().map(|s| s.to_string()).collect(),
-            end_user_playbooks: DEFAULT_END_USER_PLAYBOOKS.iter().map(|s| s.to_string()).collect(),
+            user_playbooks: DEFAULT_USER_PLAYBOOKS.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -72,43 +70,36 @@ fn csv(value: &str) -> Vec<String> {
 }
 
 impl Policy {
-    /// `GATEWAY_OPERATOR_ROLES` and `GATEWAY_END_USER_PLAYBOOKS` are
-    /// comma-separated. Unset or blank keeps the default; there is no way to
-    /// configure an empty operator set by accident.
+    /// `GATEWAY_USER_PLAYBOOKS` is comma-separated. Unset or blank keeps the
+    /// default.
     pub fn from_env() -> Self {
         let mut policy = Self::default();
-        if let Ok(v) = std::env::var("GATEWAY_OPERATOR_ROLES") {
-            let roles = csv(&v);
-            if !roles.is_empty() {
-                policy.operator_roles = roles;
-            }
-        }
-        if let Ok(v) = std::env::var("GATEWAY_END_USER_PLAYBOOKS") {
+        if let Ok(v) = std::env::var("GATEWAY_USER_PLAYBOOKS") {
             let playbooks = csv(&v);
             if !playbooks.is_empty() {
-                policy.end_user_playbooks = playbooks;
+                policy.user_playbooks = playbooks;
             }
         }
         policy
     }
 
-    pub fn is_operator(&self, user: &UserContext) -> bool {
-        crate::auth::middleware::is_auth_bypass_enabled()
-            || user.roles.iter().any(|r| self.operator_roles.iter().any(|o| o == r.trim()))
+    /// Admin or regular user: the only distinction this gateway makes.
+    pub fn is_admin(&self, user: &UserContext) -> bool {
+        crate::auth::middleware::is_auth_bypass_enabled() || user.roles.iter().any(|r| r.trim() == ADMIN_ROLE)
     }
 
     /// May `user` start catalog entry `name` of `kind` through `executePlaybook`?
     pub fn may_execute(&self, user: &UserContext, name: &str, kind: &str) -> bool {
-        self.is_operator(user) || (kind == "playbook" && self.end_user_playbooks.iter().any(|p| p == name))
+        self.is_admin(user) || (kind == "playbook" && self.user_playbooks.iter().any(|p| p == name))
     }
 
     /// What `user` may do with proxy route `method path` (`path` as captured
     /// after `/noetl/`).
     pub fn proxy_access(&self, user: &UserContext, method: &Method, path: &str) -> ProxyAccess {
-        if self.is_operator(user) {
+        if self.is_admin(user) {
             return ProxyAccess::Granted;
         }
-        match end_user_execution_route(method, path) {
+        match user_execution_route(method, path) {
             Some(id) => ProxyAccess::OwnerOnly(id.to_string()),
             None => ProxyAccess::Denied,
         }
@@ -117,11 +108,11 @@ impl Policy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProxyAccess {
-    /// Operator: forward as-is.
+    /// Admin: forward as-is.
     Granted,
-    /// End user: forward only if the session's user started this execution.
+    /// Regular user: forward only if the session's user started this execution.
     OwnerOnly(String),
-    /// End user, route not on the allowlist.
+    /// Regular user, route not on the allowlist.
     Denied,
 }
 
@@ -130,10 +121,10 @@ fn execution_id(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) && s.parse::<i64>().is_ok_and(|id| id > 0)
 }
 
-/// The two execution routes an end user may reach, matched exactly: no extra
+/// The two execution routes a regular user may reach, matched exactly: no extra
 /// segments, no empty or dot segments, and an id that is a bare decimal number.
 /// Returns the execution id.
-fn end_user_execution_route<'a>(method: &Method, path: &'a str) -> Option<&'a str> {
+fn user_execution_route<'a>(method: &Method, path: &'a str) -> Option<&'a str> {
     let segments: Vec<&str> = path.split('/').collect();
     match (method, segments.as_slice()) {
         (&Method::GET, ["executions", id]) if execution_id(id) => Some(id),
@@ -158,7 +149,7 @@ enum OwnerBackend {
 /// behalf, on the same EHDB KV face as the session cache and request store.
 ///
 /// An entry lives `ttl_secs`; after that the execution reads as unowned and an
-/// end user can no longer poll or cancel it (operators still can).
+/// regular user can no longer poll or cancel it (admins still can).
 pub struct ExecutionOwners {
     backend: OwnerBackend,
     bucket: String,
@@ -249,19 +240,19 @@ mod tests {
     }
 
     #[test]
-    fn the_default_end_user_allowlist_is_exactly_the_travel_apps_set() {
+    fn the_default_user_allowlist_is_exactly_the_travel_apps_set() {
         let p = Policy::default();
-        assert_eq!(p.end_user_playbooks.len(), 6);
+        assert_eq!(p.user_playbooks.len(), 6);
         let user = session(&[]);
-        for name in DEFAULT_END_USER_PLAYBOOKS {
+        for name in DEFAULT_USER_PLAYBOOKS {
             assert!(p.may_execute(&user, name, "playbook"), "{name}");
         }
     }
 
     #[test]
-    fn an_end_user_may_not_start_anything_else() {
+    fn a_regular_user_may_not_start_anything_else() {
         let p = Policy::default();
-        let user = session(&["developer", "viewer"]);
+        let user = session(&[]);
         for name in [
             "automation/agents/mcp/firestore",
             "muno/playbooks/profile/",
@@ -277,33 +268,34 @@ mod tests {
     }
 
     #[test]
-    fn an_operator_may_start_anything() {
+    fn an_admin_may_start_anything() {
         let p = Policy::default();
         let admin = session(&["admin"]);
         assert!(p.may_execute(&admin, "automation/agents/mcp/firestore", "playbook"));
         assert!(p.may_execute(&admin, "some/agent", "agent"));
     }
 
+    /// Two roles only: `admin`, or a regular user. Any other role name a
+    /// database may still hold grants nothing extra.
     #[test]
-    fn operator_roles_come_from_configuration() {
-        let p = Policy {
-            operator_roles: vec!["admin".into(), "developer".into()],
-            ..Policy::default()
-        };
-        assert!(p.is_operator(&session(&["developer"])));
-        assert!(!p.is_operator(&session(&["viewer"])));
-        assert!(!Policy::default().is_operator(&session(&["developer"])));
-        assert!(!Policy::default().is_operator(&session(&[])));
+    fn only_the_admin_role_is_admin() {
+        let p = Policy::default();
+        assert!(p.is_admin(&session(&["admin"])));
+        assert!(p.is_admin(&session(&[" admin "])));
+        assert!(!p.is_admin(&session(&[])));
+        for other in ["developer", "operator", "analyst", "viewer", "Admin", "admins"] {
+            assert!(!p.is_admin(&session(&[other])), "{other}");
+        }
     }
 
     #[test]
     fn csv_ignores_blanks() {
-        assert_eq!(csv(" admin, ,developer ,"), vec!["admin", "developer"]);
+        assert_eq!(csv(" a/b, ,c/d ,"), vec!["a/b", "c/d"]);
         assert!(csv(" , ").is_empty());
     }
 
     #[test]
-    fn an_end_user_reaches_only_the_two_execution_routes_and_only_as_owner() {
+    fn a_regular_user_reaches_only_the_two_execution_routes_and_only_as_owner() {
         let p = Policy::default();
         let u = session(&[]);
         assert_eq!(
@@ -317,9 +309,9 @@ mod tests {
     }
 
     #[test]
-    fn every_other_route_is_denied_to_an_end_user() {
+    fn every_other_route_is_denied_to_a_regular_user() {
         let p = Policy::default();
-        let u = session(&["developer"]);
+        let u = session(&[]);
         for (method, path) in [
             (Method::POST, "execute"),
             (Method::POST, "execute/batch"),
@@ -351,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn an_operator_keeps_the_whole_proxy() {
+    fn an_admin_keeps_the_whole_proxy() {
         let p = Policy::default();
         let admin = session(&["admin"]);
         assert_eq!(p.proxy_access(&admin, &Method::POST, "catalog/register"), ProxyAccess::Granted);

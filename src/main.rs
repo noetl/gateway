@@ -227,12 +227,12 @@ async fn main() -> anyhow::Result<()> {
             "Gateway forwarding to single NoETL upstream (no sharding configured)"
         );
     }
-    // Route authorization (crate::authorization): operators keep the whole
-    // proxy; end users reach an allowlist, and only executions they started.
+    // Route authorization (crate::authorization): admin keeps the whole proxy;
+    // a regular user reaches an allowlist, and only executions they started.
     let policy = Arc::new(authorization::Policy::from_env());
     tracing::info!(
-        operator_roles = ?policy.operator_roles,
-        end_user_playbooks = ?policy.end_user_playbooks,
+        admin_role = authorization::ADMIN_ROLE,
+        user_playbooks = ?policy.user_playbooks,
         "Route authorization policy"
     );
     let execution_owners = Arc::new(authorization::ExecutionOwners::new(

@@ -102,7 +102,7 @@ pub struct KvConfig {
     pub request_ttl_secs: u64,
     /// K/V bucket recording who started each execution (default: "execution_owners")
     pub execution_owner_bucket: String,
-    /// How long an end user may poll or cancel an execution they started, in
+    /// How long a regular user may poll or cancel an execution they started, in
     /// seconds (default: 86400 = 24 hours)
     pub execution_owner_ttl_secs: u64,
 }

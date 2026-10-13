@@ -9,8 +9,8 @@
 //! - rerunExecution mutation (canonical execution rerun flow)
 //! - proxyRequest mutation (generic API proxy for clients preferring GraphQL)
 //!
-//! Who may call which mutation is `crate::authorization`: end users only
-//! `executePlaybook` of an allowlisted playbook; operators everything.
+//! Who may call which mutation is `crate::authorization`: a regular user only
+//! `executePlaybook` of an allowlisted playbook; an admin everything.
 
 use async_graphql::{Context, EmptySubscription, Enum, Json, Object, Result as GqlResult, Schema};
 use std::sync::Arc;
@@ -66,19 +66,19 @@ fn not_authorized() -> async_graphql::Error {
     async_graphql::Error::new("not authorized")
 }
 
-/// `crate::authorization` for `executePlaybook`: operators may start anything,
-/// end users only an allowlisted playbook.
+/// `crate::authorization` for `executePlaybook`: an admin may start anything,
+/// a regular user only an allowlisted playbook.
 fn authorize_execute(ctx: &Context<'_>, name: &str, kind: &str) -> GqlResult<()> {
     let Some(user) = ctx.data_opt::<UserContext>() else {
         crate::ingress::record_route_authz("denied");
         return Err(not_authorized());
     };
     let policy = policy(ctx);
-    if policy.is_operator(user) {
-        crate::ingress::record_route_authz("operator");
+    if policy.is_admin(user) {
+        crate::ingress::record_route_authz("admin");
         Ok(())
     } else if policy.may_execute(user, name, kind) {
-        crate::ingress::record_route_authz("end_user_allowed");
+        crate::ingress::record_route_authz("user_allowed");
         Ok(())
     } else {
         crate::ingress::record_route_authz("denied");
@@ -87,16 +87,16 @@ fn authorize_execute(ctx: &Context<'_>, name: &str, kind: &str) -> GqlResult<()>
     }
 }
 
-/// `crate::authorization` for mutations only operators may call.
-fn require_operator(ctx: &Context<'_>, what: &str) -> GqlResult<()> {
+/// `crate::authorization` for mutations only an admin may call.
+fn require_admin(ctx: &Context<'_>, what: &str) -> GqlResult<()> {
     match ctx.data_opt::<UserContext>() {
-        Some(user) if policy(ctx).is_operator(user) => {
-            crate::ingress::record_route_authz("operator");
+        Some(user) if policy(ctx).is_admin(user) => {
+            crate::ingress::record_route_authz("admin");
             Ok(())
         }
         user => {
             crate::ingress::record_route_authz("denied");
-            tracing::warn!(user_id = user.map(|u| u.user_id).unwrap_or(0), what = what, "operator-only mutation refused");
+            tracing::warn!(user_id = user.map(|u| u.user_id).unwrap_or(0), what = what, "admin-only mutation refused");
             Err(not_authorized())
         }
     }
@@ -268,7 +268,7 @@ impl MutationRoot {
     ) -> GqlResult<ExecuteResult> {
         let client = ctx.data::<Arc<NoetlClient>>()?;
         let mut args = variables.map(|j| j.0).unwrap_or(serde_json::json!({}));
-        require_operator(ctx, "rerunExecution")?;
+        require_admin(ctx, "rerunExecution")?;
         // Forced: a rerun replays the source execution's stored workload, so an
         // identity this request omits would otherwise be the source's.
         bind_caller_identity(ctx, &mut args, &format!("rerun:{}", execution_id), true)?;
@@ -363,7 +363,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         #[graphql(desc = "Proxy request parameters")] input: ProxyRequestInput,
     ) -> GqlResult<ProxyResponse> {
-        require_operator(ctx, "proxyRequest")?;
+        require_admin(ctx, "proxyRequest")?;
         let client = ctx.data::<Arc<NoetlClient>>()?;
 
         let body = input.body.map(|j| j.0);

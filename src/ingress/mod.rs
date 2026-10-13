@@ -139,8 +139,8 @@ pub const AUTHZ_OUTCOMES: [&str; 3] = ["allowed", "denied", "backend_error"];
 
 /// Outcomes of the route authorization in `crate::authorization`.
 pub const ROUTE_AUTHZ_OUTCOMES: [&str; 6] = [
-    "operator",
-    "end_user_allowed",
+    "admin",
+    "user_allowed",
     "denied",
     "not_owner",
     "owner_unverifiable",

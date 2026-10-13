@@ -10,8 +10,8 @@
 //! Usage:
 //! - `/noetl/*path` - Forwards to `{NOETL_BASE_URL}/api/*path`
 //! - Requires valid session token in Authorization header
-//! - Operator sessions reach every path; end-user sessions only the execution
-//!   routes for executions they started (`crate::authorization`)
+//! - Admin sessions reach every path; regular users only the execution routes
+//!   for executions they started (`crate::authorization`)
 
 use axum::{
     body::Body,
@@ -44,7 +44,7 @@ pub struct ProxyState {
     pub http_client: reqwest::Client,
     /// Which paths a session may reach (`crate::authorization`).
     pub policy: Arc<Policy>,
-    /// Who started each execution. `None` refuses every end-user execution
+    /// Who started each execution. `None` refuses every regular-user execution
     /// route: ownership that cannot be checked is not assumed.
     pub owners: Option<Arc<ExecutionOwners>>,
 }
@@ -197,7 +197,7 @@ fn refuse(status: StatusCode, error: &str) -> Response<Body> {
 }
 
 /// Apply `crate::authorization` to one proxied request, before its body is
-/// read. A route outside an end user's allowlist is 403. An execution the
+/// read. A route outside a regular user's allowlist is 403. An execution the
 /// caller did not start is 404, the same as one that does not exist, so ids
 /// cannot be probed. Returns the refusal, or `None` to forward.
 async fn authorize(
@@ -213,7 +213,7 @@ async fn authorize(
     };
     let execution_id = match state.policy.proxy_access(user, method, path) {
         ProxyAccess::Granted => {
-            crate::ingress::record_route_authz("operator");
+            crate::ingress::record_route_authz("admin");
             return None;
         }
         ProxyAccess::Denied => {
@@ -229,7 +229,7 @@ async fn authorize(
     };
     match owners.is_owner(&execution_id, user).await {
         Ok(true) => {
-            crate::ingress::record_route_authz("end_user_allowed");
+            crate::ingress::record_route_authz("user_allowed");
             None
         }
         Ok(false) => {

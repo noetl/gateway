@@ -47,9 +47,9 @@ fn user(sub: Option<&str>) -> UserContext {
     }
 }
 
-/// An operator: the proxy and `rerunExecution` are operator-only
-/// (`crate::authorization`), and identity is bound for operators too.
-fn operator(sub: Option<&str>) -> UserContext {
+/// An admin: the proxy and `rerunExecution` are admin-only
+/// (`crate::authorization`), and identity is bound for admins too.
+fn admin(sub: Option<&str>) -> UserContext {
     UserContext {
         roles: vec!["admin".into()],
         ..user(sub)
@@ -141,7 +141,7 @@ async fn graphql_execute_of_an_identity_free_playbook_is_unchanged() {
 #[tokio::test]
 async fn graphql_rerun_binds_identities_the_request_did_not_send() {
     let (noetl, seen) = mock_noetl().await;
-    let gw = gateway(&noetl, Some(operator(Some(CALLER)))).await;
+    let gw = gateway(&noetl, Some(admin(Some(CALLER)))).await;
     let resp: Value = reqwest::Client::new()
         .post(format!("{gw}/graphql"))
         .json(&json!({"query": "mutation { rerunExecution(executionId: \"42\") { executionId } }"}))
@@ -161,7 +161,7 @@ async fn graphql_rerun_binds_identities_the_request_did_not_send() {
 #[tokio::test]
 async fn proxy_execute_runs_as_the_caller_not_the_uid_in_the_body() {
     let (noetl, seen) = mock_noetl().await;
-    let gw = gateway(&noetl, Some(operator(Some(CALLER)))).await;
+    let gw = gateway(&noetl, Some(admin(Some(CALLER)))).await;
     let status = reqwest::Client::new()
         .post(format!("{gw}/noetl/execute"))
         .json(&json!({"path": "muno/playbooks/profile", "payload": {"uid": VICTIM, "profile": {}}}))
@@ -176,7 +176,7 @@ async fn proxy_execute_runs_as_the_caller_not_the_uid_in_the_body() {
 #[tokio::test]
 async fn proxy_batch_runs_every_item_as_the_caller() {
     let (noetl, seen) = mock_noetl().await;
-    let gw = gateway(&noetl, Some(operator(Some(CALLER)))).await;
+    let gw = gateway(&noetl, Some(admin(Some(CALLER)))).await;
     reqwest::Client::new()
         .post(format!("{gw}/noetl/execute/batch"))
         .json(&json!({"executions": [
@@ -194,7 +194,7 @@ async fn proxy_batch_runs_every_item_as_the_caller() {
 #[tokio::test]
 async fn proxy_execute_without_a_session_subject_is_forbidden_and_nothing_runs() {
     let (noetl, seen) = mock_noetl().await;
-    let gw = gateway(&noetl, Some(operator(None))).await;
+    let gw = gateway(&noetl, Some(admin(None))).await;
     let status = reqwest::Client::new()
         .post(format!("{gw}/noetl/execute"))
         .json(&json!({"path": "muno/playbooks/profile", "payload": {"uid": VICTIM}}))

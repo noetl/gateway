@@ -1,6 +1,6 @@
 //! End to end: through the real GraphQL handler, schema and REST proxy, against a
 //! mock NoETL server that records every request it receives. Proves what an
-//! end-user session can and cannot reach (`crate::authorization`), and that a
+//! regular user can and cannot reach (`crate::authorization`), and that a
 //! refused request never reaches NoETL.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +51,7 @@ async fn mock_noetl() -> (String, Mock) {
     (format!("http://{addr}"), mock)
 }
 
-fn end_user(user_id: i32) -> UserContext {
+fn user(user_id: i32) -> UserContext {
     UserContext {
         user_id,
         email: format!("user{user_id}@example.invalid"),
@@ -62,10 +62,10 @@ fn end_user(user_id: i32) -> UserContext {
     }
 }
 
-fn operator() -> UserContext {
+fn admin() -> UserContext {
     UserContext {
         roles: vec!["admin".into()],
-        ..end_user(99)
+        ..user(99)
     }
 }
 
@@ -146,10 +146,10 @@ async fn status(method: reqwest::Method, url: String) -> reqwest::StatusCode {
 }
 
 #[tokio::test]
-async fn an_end_user_runs_an_allowlisted_playbook_then_polls_and_cancels_it() {
+async fn a_regular_user_runs_an_allowlisted_playbook_then_polls_and_cancels_it() {
     let (noetl, mock) = mock_noetl().await;
     let owners = Arc::new(ExecutionOwners::in_memory());
-    let gw = gateway(&noetl, end_user(1), Some(owners)).await;
+    let gw = gateway(&noetl, user(1), Some(owners)).await;
 
     let id = execute(&gw, "muno/playbooks/profile").await.expect("allowlisted playbook runs");
     assert_eq!(status(reqwest::Method::GET, format!("{gw}/noetl/executions/{id}")).await, 200);
@@ -168,20 +168,20 @@ async fn an_end_user_runs_an_allowlisted_playbook_then_polls_and_cancels_it() {
 }
 
 #[tokio::test]
-async fn every_allowlisted_playbook_runs_for_an_end_user() {
+async fn every_allowlisted_playbook_runs_for_an_user() {
     let (noetl, _) = mock_noetl().await;
-    let gw = gateway(&noetl, end_user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
-    for name in crate::authorization::DEFAULT_END_USER_PLAYBOOKS {
+    let gw = gateway(&noetl, user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
+    for name in crate::authorization::DEFAULT_USER_PLAYBOOKS {
         assert!(execute(&gw, name).await.is_ok(), "{name}");
     }
 }
 
 #[tokio::test]
-async fn an_end_user_cannot_read_or_cancel_another_users_execution() {
+async fn a_regular_user_cannot_read_or_cancel_another_users_execution() {
     let (noetl, mock) = mock_noetl().await;
     let owners = Arc::new(ExecutionOwners::in_memory());
-    let alice = gateway(&noetl, end_user(1), Some(owners.clone())).await;
-    let bob = gateway(&noetl, end_user(2), Some(owners)).await;
+    let alice = gateway(&noetl, user(1), Some(owners.clone())).await;
+    let bob = gateway(&noetl, user(2), Some(owners)).await;
 
     let id = execute(&alice, "muno/playbooks/itinerary-planner").await.unwrap();
     let before = mock.seen().len();
@@ -196,9 +196,9 @@ async fn an_end_user_cannot_read_or_cancel_another_users_execution() {
 }
 
 #[tokio::test]
-async fn an_end_user_cannot_start_a_playbook_outside_the_allowlist() {
+async fn a_regular_user_cannot_start_a_playbook_outside_the_allowlist() {
     let (noetl, mock) = mock_noetl().await;
-    let gw = gateway(&noetl, end_user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
+    let gw = gateway(&noetl, user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
     for name in ["automation/agents/mcp/firestore", "auth0/login", "muno/playbooks/profile/"] {
         assert!(execute(&gw, name).await.is_err(), "{name}");
     }
@@ -213,9 +213,9 @@ async fn an_end_user_cannot_start_a_playbook_outside_the_allowlist() {
 }
 
 #[tokio::test]
-async fn an_end_user_cannot_use_the_operator_mutations() {
+async fn a_regular_user_cannot_use_the_admin_mutations() {
     let (noetl, mock) = mock_noetl().await;
-    let gw = gateway(&noetl, end_user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
+    let gw = gateway(&noetl, user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
     let rerun = graphql(&gw, "mutation { rerunExecution(executionId: \"42\") { executionId } }", json!({})).await;
     assert!(rerun.get("errors").is_some(), "{rerun}");
     let proxied = graphql(
@@ -229,9 +229,9 @@ async fn an_end_user_cannot_use_the_operator_mutations() {
 }
 
 #[tokio::test]
-async fn an_end_user_cannot_reach_any_other_proxy_route() {
+async fn a_regular_user_cannot_reach_any_other_proxy_route() {
     let (noetl, mock) = mock_noetl().await;
-    let gw = gateway(&noetl, end_user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
+    let gw = gateway(&noetl, user(1), Some(Arc::new(ExecutionOwners::in_memory()))).await;
     for (method, path) in [
         (reqwest::Method::POST, "execute"),
         (reqwest::Method::POST, "execute/batch"),
@@ -252,11 +252,11 @@ async fn an_end_user_cannot_reach_any_other_proxy_route() {
 }
 
 #[tokio::test]
-async fn an_operator_keeps_the_whole_proxy_and_every_execution() {
+async fn an_admin_keeps_the_whole_proxy_and_every_execution() {
     let (noetl, mock) = mock_noetl().await;
     let owners = Arc::new(ExecutionOwners::in_memory());
-    let alice = gateway(&noetl, end_user(1), Some(owners.clone())).await;
-    let admin = gateway(&noetl, operator(), Some(owners)).await;
+    let alice = gateway(&noetl, user(1), Some(owners.clone())).await;
+    let admin = gateway(&noetl, admin(), Some(owners)).await;
 
     let id = execute(&alice, "muno/playbooks/profile").await.unwrap();
     assert_eq!(status(reqwest::Method::GET, format!("{admin}/noetl/executions/{id}")).await, 200);
@@ -266,9 +266,9 @@ async fn an_operator_keeps_the_whole_proxy_and_every_execution() {
 }
 
 #[tokio::test]
-async fn without_an_owner_store_an_end_user_execution_route_is_refused() {
+async fn without_an_owner_store_a_regular_user_execution_route_is_refused() {
     let (noetl, mock) = mock_noetl().await;
-    let gw = gateway(&noetl, end_user(1), None).await;
+    let gw = gateway(&noetl, user(1), None).await;
     let id = execute(&gw, "muno/playbooks/profile").await.unwrap();
     assert_eq!(status(reqwest::Method::GET, format!("{gw}/noetl/executions/{id}")).await, 503);
     assert_eq!(mock.seen(), vec!["POST /api/execute".to_string()]);
