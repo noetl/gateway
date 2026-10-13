@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.15.0](https://github.com/noetl/gateway/compare/v3.14.1...v3.15.0) (2026-10-13)
+
+### Features
+
+* **auth:** allow muno/playbooks/threads for end-user sessions ([4cc6b61](https://github.com/noetl/gateway/commit/4cc6b61db5e7661222ef8de796a64ed1bea93c76)), closes [noetl/travel#148](https://github.com/noetl/travel/issues/148)
+* **auth:** role-based route authorization on the proxy and GraphQL ([025c9d9](https://github.com/noetl/gateway/commit/025c9d9513aaa8b7303d83dce8f0e84c854ade86))
+
 ## [3.14.1](https://github.com/noetl/gateway/compare/v3.14.0...v3.14.1) (2026-10-13)
 
 ### Bug Fixes
