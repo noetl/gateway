@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.16.0](https://github.com/noetl/gateway/compare/v3.15.0...v3.16.0) (2026-10-20)
+
+### Features
+
+* opt-in guest sessions for allowlisted public playbooks ([4dc8550](https://github.com/noetl/gateway/commit/4dc85502a15455b85937b4450afc22833ec28423)), closes [noetl/ai-meta#484](https://github.com/noetl/ai-meta/issues/484)
+* read the guest token key from a mounted file ([27352bf](https://github.com/noetl/gateway/commit/27352bf28c213f196830ebb24456c8af01700de4)), closes [noetl/ai-meta#484](https://github.com/noetl/ai-meta/issues/484)
+
+### Bug Fixes
+
+* trust only the proxy-appended entry of the client-IP header ([7ad35d8](https://github.com/noetl/gateway/commit/7ad35d8a6fc9491c5ef52cfdbc83478c16cfa909)), closes [noetl/ai-meta#484](https://github.com/noetl/ai-meta/issues/484)
+
 ## [3.15.0](https://github.com/noetl/gateway/compare/v3.14.1...v3.15.0) (2026-10-13)
 
 ### Features
