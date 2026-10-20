@@ -30,6 +30,9 @@ mod connection_hub;
 mod ehdb_kv;
 mod event_feed;
 mod graphql;
+mod guest;
+#[cfg(test)]
+mod guest_routes_tests;
 mod identity;
 #[cfg(test)]
 mod identity_routes_tests;
@@ -184,12 +187,28 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(%error, "EHDB execution lifecycle SSE forwarding disabled");
     }
 
+    // Guest sessions (crate::guest): off unless GATEWAY_GUEST_PLAYBOOKS is set.
+    let guests = guest::GuestSessions::from_env().log("Invalid guest session config")?;
+    if let Some(g) = guests.as_ref() {
+        tracing::info!(
+            playbooks = ?g.config.playbooks,
+            ttl_secs = g.config.ttl_secs,
+            runs_per_guest = g.config.runs_per_guest,
+            runs_per_ip = g.config.runs_per_ip,
+            mints_per_ip = g.config.mints_per_ip,
+            total_runs = g.config.total_runs,
+            ip_header = ?g.config.ip_header,
+            "Guest sessions enabled: POST /api/auth/guest"
+        );
+    }
+
     // SSE state for real-time callbacks
     let sse_state = Arc::new(SseState {
         connection_hub: connection_hub.clone(),
         request_store: request_store.clone(),
         session_cache: session_cache.clone(),
         heartbeat_interval_secs: config.transport.heartbeat_interval_secs,
+        guests: guests.clone(),
     });
 
     // Combined auth state with configurable playbook paths and session cache
@@ -198,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         callbacks: callback_manager.clone(),
         playbook_config: config.auth_playbooks.clone(),
         session_cache: session_cache.clone(),
+        guests: guests.clone(),
     });
 
     // Proxy state for forwarding requests to NoETL.  Phase F
@@ -229,10 +249,11 @@ async fn main() -> anyhow::Result<()> {
     }
     // Route authorization (crate::authorization): admin keeps the whole proxy;
     // a regular user reaches an allowlist, and only executions they started.
-    let policy = Arc::new(authorization::Policy::from_env());
+    let policy = Arc::new(authorization::Policy::from_env(guests.as_ref().map(|g| &g.config)));
     tracing::info!(
         admin_role = authorization::ADMIN_ROLE,
         user_playbooks = ?policy.user_playbooks,
+        guest_playbooks = ?policy.guest_playbooks,
         "Route authorization policy"
     );
     let execution_owners = Arc::new(authorization::ExecutionOwners::new(
@@ -248,14 +269,17 @@ async fn main() -> anyhow::Result<()> {
     // Wrap config in Arc for sharing with GraphQL context
     let config_arc = Arc::new(config.clone());
 
-    let schema: AppSchema = Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
+    let mut schema = Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
         .data(noetl_arc.clone())
         .data(proxy_state.clone())
         .data(request_store.clone())
         .data(config_arc.clone())
         .data(policy.clone())
-        .data(execution_owners.clone())
-        .finish();
+        .data(execution_owners.clone());
+    if let Some(g) = guests.clone() {
+        schema = schema.data(g);
+    }
+    let schema: AppSchema = schema.finish();
 
     // CORS configuration
     let cors_origins_str = config.cors_origins_string();
@@ -298,6 +322,11 @@ async fn main() -> anyhow::Result<()> {
         // Internal callback endpoint for workers to deliver results via HTTP
         .route("/api/internal/callback", post(auth::internal_callback))
         .with_state(auth_state.clone());
+    // Guest sessions: mounted only in guest mode (and never in scoped-app mode, below).
+    let guest_routes = match guests.clone() {
+        Some(g) => Router::new().route("/api/auth/guest", post(guest::mint)).with_state(g),
+        None => Router::new(),
+    };
 
     // Sharding diagnostic — Phase F R3b-2 of noetl/ai-meta#49.
     // Twin of noetl-server's GET /api/runtime/shard-info.  Public;
@@ -400,6 +429,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Router::new()
         .merge(public_routes)
+        .merge(guest_routes)
         .merge(sharding_diagnostic_routes)
         .merge(sse_routes)
         .merge(ingress_routes)
@@ -421,7 +451,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .log("Failed to bind to address")?;
-    axum::serve(listener, app).await.log("Failed to serve app")?;
+    // Connect info: the socket peer is the guest client IP when no trusted header is set.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .log("Failed to serve app")?;
     Ok(())
 }
 

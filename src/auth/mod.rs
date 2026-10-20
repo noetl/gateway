@@ -25,6 +25,8 @@ pub struct AuthState {
     pub playbook_config: AuthPlaybooksConfig,
     /// Session cache backed by NATS K/V
     pub session_cache: Arc<SessionCache>,
+    /// Guest sessions (`crate::guest`); `None` when guest mode is off.
+    pub guests: Option<Arc<crate::guest::GuestSessions>>,
 }
 
 /// Authentication error responses

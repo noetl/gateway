@@ -103,6 +103,28 @@ fn require_admin(ctx: &Context<'_>, what: &str) -> GqlResult<()> {
 }
 
 /// Remember who started `execution_id`, so they can poll and cancel it.
+/// A guest's execution counts against its rate limits (`crate::guest`); a
+/// refusal is a GraphQL error with `code: RATE_LIMITED` and `retryAfter`
+/// (seconds). Sessions that are not guests pass untouched.
+fn admit_guest_run(ctx: &Context<'_>) -> GqlResult<()> {
+    use async_graphql::ErrorExtensions;
+    let Some(guest) = ctx.data_opt::<UserContext>().and_then(|u| u.guest.as_ref()) else {
+        return Ok(());
+    };
+    // A guest session only exists when guest mode is on; without its limits, refuse.
+    let Some(guests) = ctx.data_opt::<Arc<crate::guest::GuestSessions>>() else {
+        return Err(not_authorized());
+    };
+    guests.admit_run(guest).map_err(|crate::guest::RateLimited(wait)| {
+        crate::ingress::record_route_authz("guest_rate_limited");
+        tracing::debug!(retry_after = wait, "guest executePlaybook refused: rate limit");
+        async_graphql::Error::new("Too many requests; try again later").extend_with(|_, e| {
+            e.set("code", "RATE_LIMITED");
+            e.set("retryAfter", wait);
+        })
+    })
+}
+
 async fn record_owner(ctx: &Context<'_>, execution_id: &str) {
     crate::authorization::record_owner(
         ctx.data_opt::<Arc<ExecutionOwners>>(),
@@ -180,6 +202,7 @@ impl MutationRoot {
         let catalog_kind = resource_kind.unwrap_or(ExecutableResourceKind::Playbook).as_str();
         authorize_execute(ctx, &name, catalog_kind)?;
         bind_caller_identity(ctx, &mut args, &name, false)?;
+        admit_guest_run(ctx)?;
 
         // If client_id is provided, set up async callback
         let request_id = if let Some(cid) = client_id.as_ref() {
