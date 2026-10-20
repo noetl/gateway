@@ -9,7 +9,8 @@ Off by default. A gateway with no guest configuration behaves exactly as before:
 | Env | Default | Meaning |
 |---|---|---|
 | `GATEWAY_GUEST_PLAYBOOKS` | unset | Comma-separated catalog paths a guest may execute. Unset or blank = guest mode off. |
-| `GATEWAY_GUEST_TOKEN_KEY` | — | HMAC-SHA256 signing key, at least 32 bytes. Required when playbooks are set (the gateway refuses to start otherwise). Keep it in the deployment secret store. Rotating it ends every guest session. |
+| `GATEWAY_GUEST_TOKEN_KEY` | — | HMAC-SHA256 signing key, at least 32 bytes. Required when playbooks are set (the gateway refuses to start otherwise). Rotating it ends every guest session. |
+| `GATEWAY_GUEST_TOKEN_KEY_FILE` | — | Instead of the above: a file holding the key, e.g. a Secret Manager secret mounted by the Secrets Store CSI driver (one trailing newline is dropped). Setting both is an error. |
 | `GATEWAY_GUEST_TTL_SECS` | 3600 | Guest session lifetime (minimum 60). |
 | `GATEWAY_GUEST_RUNS_PER_HOUR` | 20 | Executions per guest session per rolling hour. |
 | `GATEWAY_GUEST_IP_RUNS_PER_HOUR` | 60 | Guest executions per client IP per rolling hour. |

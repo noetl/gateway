@@ -70,14 +70,37 @@ impl GuestConfig {
         Self::from_lookup(|k| std::env::var(k).ok())
     }
 
+    /// The signing key: `GATEWAY_GUEST_TOKEN_KEY`, or the contents of the file
+    /// `GATEWAY_GUEST_TOKEN_KEY_FILE` names (a mounted secret; one trailing
+    /// newline is dropped). Setting both is an error.
+    fn key(get: &impl Fn(&str) -> Option<String>) -> anyhow::Result<Vec<u8>> {
+        let inline = get("GATEWAY_GUEST_TOKEN_KEY").filter(|v| !v.is_empty());
+        let file = get("GATEWAY_GUEST_TOKEN_KEY_FILE").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        match (inline, file) {
+            (Some(_), Some(_)) => anyhow::bail!("set GATEWAY_GUEST_TOKEN_KEY or GATEWAY_GUEST_TOKEN_KEY_FILE, not both"),
+            (Some(k), None) => Ok(k.into_bytes()),
+            (None, Some(path)) => {
+                let mut k = std::fs::read(&path).map_err(|e| anyhow::anyhow!("GATEWAY_GUEST_TOKEN_KEY_FILE={path}: {e}"))?;
+                if k.last() == Some(&b'\n') {
+                    k.pop();
+                    if k.last() == Some(&b'\r') {
+                        k.pop();
+                    }
+                }
+                Ok(k)
+            }
+            (None, None) => Ok(Vec::new()),
+        }
+    }
+
     fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<Self>> {
         let playbooks = crate::authorization::csv(&get("GATEWAY_GUEST_PLAYBOOKS").unwrap_or_default());
         if playbooks.is_empty() {
             return Ok(None);
         }
-        let key = get("GATEWAY_GUEST_TOKEN_KEY").unwrap_or_default().into_bytes();
+        let key = Self::key(&get)?;
         if key.len() < MIN_KEY_BYTES {
-            anyhow::bail!("GATEWAY_GUEST_PLAYBOOKS is set but GATEWAY_GUEST_TOKEN_KEY is missing or shorter than {MIN_KEY_BYTES} bytes");
+            anyhow::bail!("GATEWAY_GUEST_PLAYBOOKS is set but the guest token key (GATEWAY_GUEST_TOKEN_KEY or _FILE) is missing or shorter than {MIN_KEY_BYTES} bytes");
         }
         let num = |name: &str, default: u64| -> anyhow::Result<u64> {
             match get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
@@ -345,6 +368,21 @@ mod tests {
             ("GATEWAY_GUEST_RUNS_PER_HOUR", "x")
         ])
         .is_err());
+    }
+
+    #[test]
+    fn the_key_can_come_from_a_mounted_file() {
+        let dir = std::env::temp_dir().join(format!("guest-key-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&dir, format!("{}\n", "f".repeat(32))).unwrap();
+        let path = dir.to_string_lossy().to_string();
+        let c = cfg(&[("GATEWAY_GUEST_PLAYBOOKS", "a/b"), ("GATEWAY_GUEST_TOKEN_KEY_FILE", &path)]).unwrap().unwrap();
+        assert_eq!(c.key, b"f".repeat(32), "one trailing newline dropped");
+        // Both, a missing file, or a short file: refuse to start.
+        assert!(cfg(&[("GATEWAY_GUEST_PLAYBOOKS", "a/b"), ("GATEWAY_GUEST_TOKEN_KEY_FILE", &path), ("GATEWAY_GUEST_TOKEN_KEY", &"k".repeat(32))]).is_err());
+        assert!(cfg(&[("GATEWAY_GUEST_PLAYBOOKS", "a/b"), ("GATEWAY_GUEST_TOKEN_KEY_FILE", "/nonexistent/guest-key")]).is_err());
+        std::fs::write(&dir, "short\n").unwrap();
+        assert!(cfg(&[("GATEWAY_GUEST_PLAYBOOKS", "a/b"), ("GATEWAY_GUEST_TOKEN_KEY_FILE", &path)]).is_err());
+        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]
