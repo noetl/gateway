@@ -15,9 +15,11 @@ Off by default. A gateway with no guest configuration behaves exactly as before:
 | `GATEWAY_GUEST_IP_RUNS_PER_HOUR` | 60 | Guest executions per client IP per rolling hour. |
 | `GATEWAY_GUEST_IP_SESSIONS_PER_HOUR` | 20 | Guest sessions minted per client IP per rolling hour. |
 | `GATEWAY_GUEST_TOTAL_RUNS_PER_HOUR` | 600 | Ceiling on all guest executions per rolling hour. |
-| `GATEWAY_CLIENT_IP_HEADER` | unset | Trusted header carrying the client IP (first entry of a list), e.g. `cf-connecting-ip`. Unset = the TCP peer address. |
+| `GATEWAY_CLIENT_IP_HEADER` | unset | Trusted header carrying the client IP, e.g. `cf-connecting-ip`. From a list such as `x-forwarded-for` the gateway takes the **last** entry (the one the trusted proxy appended); client-supplied entries are ignored. Unset = the TCP peer address. |
 
-Limits are kept in memory per gateway pod, so N replicas allow up to N times each limit. If the origin also accepts traffic that bypasses the proxy setting `GATEWAY_CLIENT_IP_HEADER`, that header can be forged; the per-guest and total limits still apply.
+Limits are kept in memory per gateway pod, so N replicas allow up to N times each limit.
+
+Per-IP limits are only as good as the header: if the gateway's load balancer also accepts traffic that does not pass through the proxy that sets `GATEWAY_CLIENT_IP_HEADER`, a client can send that header itself. Restrict the load balancer to the proxy's addresses (for Cloudflare, its published IP ranges via `loadBalancerSourceRanges`) to make per-IP limits reliable. The per-guest and total limits hold either way.
 
 ## Flow
 

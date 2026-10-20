@@ -214,16 +214,20 @@ impl GuestSessions {
         self.verify_at(token, now_secs())
     }
 
-    /// The client IP: the configured trusted header (first entry of a list),
-    /// else the socket peer, else "unknown".
+    /// The client IP: the configured trusted header, else the socket peer,
+    /// else "unknown". From a list (`X-Forwarded-For: client, proxy1, ...`,
+    /// possibly over several header lines) it takes the LAST entry: the one the
+    /// trusted proxy in front of the gateway appended. Earlier entries are
+    /// whatever the client sent and are never trusted.
     pub fn client_ip(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
         if let Some(h) = &self.config.ip_header {
             if let Some(ip) = headers
-                .get(h)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
+                .get_all(h)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .flat_map(|v| v.split(','))
                 .map(str::trim)
-                .filter(|v| !v.is_empty())
+                .rfind(|v| !v.is_empty())
             {
                 return ip.to_string();
             }
@@ -413,10 +417,17 @@ mod tests {
             GuestSessions::new(c.clone()).client_ip(&headers, Some(peer)),
             "203.0.113.7"
         );
+        // A list: the entry the trusted proxy appended (last), never a
+        // client-supplied one, including across repeated header lines.
         c.ip_header = Some(HeaderName::from_static("x-forwarded-for"));
         assert_eq!(
             GuestSessions::new(c.clone()).client_ip(&headers, Some(peer)),
-            "198.51.100.1"
+            "10.0.0.1"
+        );
+        headers.append("x-forwarded-for", "192.0.2.50".parse().unwrap());
+        assert_eq!(
+            GuestSessions::new(c.clone()).client_ip(&headers, Some(peer)),
+            "192.0.2.50"
         );
         assert_eq!(GuestSessions::new(c).client_ip(&HeaderMap::new(), None), "unknown");
     }
