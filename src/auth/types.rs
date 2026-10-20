@@ -16,4 +16,8 @@ pub struct UserContext {
     /// routes the session may reach; see `crate::authorization`.
     #[serde(default)]
     pub roles: Vec<String>,
+    /// Set only for a guest session (`crate::guest`): no user, no subject, no
+    /// roles; may start only the guest playbooks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest: Option<crate::guest::Guest>,
 }

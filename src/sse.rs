@@ -39,6 +39,8 @@ pub struct SseState {
     pub request_store: Arc<RequestStore>,
     pub session_cache: Arc<SessionCache>,
     pub heartbeat_interval_secs: u64,
+    /// Guest sessions (`crate::guest`); `None` when guest mode is off.
+    pub guests: Option<Arc<crate::guest::GuestSessions>>,
 }
 
 /// Initialization response data
@@ -91,10 +93,24 @@ pub async fn sse_handler(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    // Validate session token
-    let session = match state.session_cache.get(&params.session_token).await {
-        Some(s) if s.is_active => s,
-        _ => {
+    // Validate session token: a guest token (guest mode only) locally, any
+    // other against the session cache.
+    let guest = state
+        .guests
+        .as_ref()
+        .filter(|_| params.session_token.starts_with(crate::guest::TOKEN_PREFIX))
+        .map(|g| g.verify(&params.session_token).is_some());
+    let caller = match guest {
+        Some(true) => Some("guest".to_string()),
+        Some(false) => None,
+        None => match state.session_cache.get(&params.session_token).await {
+            Some(s) if s.is_active => Some(s.email),
+            _ => None,
+        },
+    };
+    let caller = match caller {
+        Some(c) => c,
+        None => {
             // Return error as SSE event then close
             let error_msg = JsonRpcMessage::error_response(
                 None,
@@ -173,7 +189,7 @@ pub async fn sse_handler(
     tracing::info!(
         "SSE connection established: client_id={}, user={}",
         &client_id[..8.min(client_id.len())],
-        session.email
+        caller
     );
 
     // Create stream from receiver

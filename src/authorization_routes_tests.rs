@@ -59,6 +59,7 @@ fn user(user_id: i32) -> UserContext {
         session_token: format!("synthetic-{user_id}"),
         auth0_sub: Some(format!("auth0|user{user_id}")),
         roles: Vec::new(),
+        guest: None,
     }
 }
 

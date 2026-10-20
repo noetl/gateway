@@ -44,6 +44,7 @@ fn user(sub: Option<&str>) -> UserContext {
         session_token: "synthetic-session".into(),
         auth0_sub: sub.map(str::to_string),
         roles: Vec::new(),
+        guest: None,
     }
 }
 

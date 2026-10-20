@@ -1,9 +1,10 @@
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use super::types::UserContext;
@@ -40,6 +41,31 @@ pub async fn auth_middleware(
 
     let token = session_token.unwrap();
 
+    // A guest token (guest mode only) is verified here, never against the
+    // session cache or the NoETL auth API. It wins over dev bypass, so a guest
+    // stays a guest everywhere.
+    if let Some(guests) = state.guests.as_ref().filter(|_| token.starts_with(crate::guest::TOKEN_PREFIX)) {
+        let Some(id) = guests.verify(token) else {
+            crate::ingress::record_session_check("guest_invalid");
+            tracing::debug!("Invalid or expired guest token");
+            return Err((StatusCode::UNAUTHORIZED, "Invalid or expired session").into_response());
+        };
+        let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+        let ip = guests.client_ip(request.headers(), peer);
+        let user_context = UserContext {
+            user_id: 0,
+            email: String::new(),
+            display_name: "Guest".to_string(),
+            session_token: token.to_string(),
+            auth0_sub: None,
+            roles: Vec::new(),
+            guest: Some(crate::guest::Guest { id, ip }),
+        };
+        crate::ingress::record_session_check("guest");
+        request.extensions_mut().insert(user_context);
+        return Ok(next.run(request).await);
+    }
+
     // Development mode: bypass validation but still require a token
     if is_auth_bypass_enabled() {
         crate::ingress::record_session_check("bypass");
@@ -51,6 +77,7 @@ pub async fn auth_middleware(
             session_token: token.to_string(),
             auth0_sub: None,
             roles: Vec::new(),
+            guest: None,
         };
         request.extensions_mut().insert(user_context);
         return Ok(next.run(request).await);
@@ -80,6 +107,7 @@ pub async fn auth_middleware(
         session_token: token.to_string(),
         auth0_sub: cached.auth0_sub,
         roles: cached.roles,
+        guest: None,
     };
 
     tracing::info!("Authenticated user: {} ({})", user_context.email, user_context.user_id);
