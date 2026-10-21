@@ -57,6 +57,10 @@ pub struct Policy {
     pub user_playbooks: Vec<String>,
     /// Playbooks a guest session may start; empty unless guest mode is on.
     pub guest_playbooks: Vec<String>,
+    /// Auth provider → app, and app → playbooks its users may start; empty
+    /// unless auth providers are on (`crate::auth_providers`).
+    pub provider_apps: HashMap<String, String>,
+    pub app_playbooks: HashMap<String, Vec<String>>,
 }
 
 impl Default for Policy {
@@ -64,6 +68,8 @@ impl Default for Policy {
         Self {
             user_playbooks: DEFAULT_USER_PLAYBOOKS.iter().map(|s| s.to_string()).collect(),
             guest_playbooks: Vec::new(),
+            provider_apps: HashMap::new(),
+            app_playbooks: HashMap::new(),
         }
     }
 }
@@ -81,9 +87,21 @@ impl Policy {
     /// `GATEWAY_USER_PLAYBOOKS` is comma-separated. Unset or blank keeps the
     /// default. `guest` is the guest-mode config, when on.
     pub fn from_env(guest: Option<&crate::guest::GuestConfig>) -> Self {
+        Self::from_env_with(guest, None)
+    }
+
+    /// As [`Self::from_env`], plus the auth providers' apps when they are on.
+    pub fn from_env_with(
+        guest: Option<&crate::guest::GuestConfig>,
+        providers: Option<&crate::auth_providers::ProvidersConfig>,
+    ) -> Self {
         let mut policy = Self::default();
         if let Some(g) = guest {
             policy.guest_playbooks = g.playbooks.clone();
+        }
+        if let Some(p) = providers {
+            policy.provider_apps = p.provider_apps();
+            policy.app_playbooks = p.app_playbooks.clone();
         }
         if let Ok(v) = std::env::var("GATEWAY_USER_PLAYBOOKS") {
             let playbooks = csv(&v);
@@ -107,7 +125,21 @@ impl Policy {
         if user.guest.is_some() {
             return kind == "playbook" && self.guest_playbooks.iter().any(|p| p == name);
         }
-        self.is_admin(user) || (kind == "playbook" && self.user_playbooks.iter().any(|p| p == name))
+        if self.is_admin(user) {
+            return true;
+        }
+        if kind != "playbook" {
+            return false;
+        }
+        use crate::auth_providers::{session_app, SessionApp};
+        match session_app(user.auth0_sub.as_deref(), &self.provider_apps) {
+            SessionApp::None => self.user_playbooks.iter().any(|p| p == name),
+            SessionApp::App(app) => {
+                self.app_playbooks.get(&app).is_some_and(|l| l.iter().any(|p| p == name))
+                    || self.guest_playbooks.iter().any(|p| p == name)
+            }
+            SessionApp::Unknown => false,
+        }
     }
 
     /// What `user` may do with proxy route `method path` (`path` as captured

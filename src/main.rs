@@ -21,6 +21,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 mod auth;
+mod auth_providers;
+#[cfg(test)]
+mod auth_providers_routes_tests;
 mod authorization;
 #[cfg(test)]
 mod authorization_routes_tests;
@@ -202,6 +205,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Auth providers (crate::auth_providers): off unless GATEWAY_AUTH_PROVIDERS is set.
+    let providers = auth_providers::ProvidersConfig::from_env().log("Invalid auth provider config")?;
+    if let Some(p) = providers.as_ref() {
+        let mut names: Vec<&String> = p.providers.keys().collect();
+        names.sort();
+        tracing::info!(providers = ?names, apps = ?p.app_playbooks.keys().collect::<Vec<_>>(), "Auth providers enabled: POST /api/auth/providers/{{provider}}/{{action}}");
+    }
+
     // SSE state for real-time callbacks
     let sse_state = Arc::new(SseState {
         connection_hub: connection_hub.clone(),
@@ -249,7 +260,10 @@ async fn main() -> anyhow::Result<()> {
     }
     // Route authorization (crate::authorization): admin keeps the whole proxy;
     // a regular user reaches an allowlist, and only executions they started.
-    let policy = Arc::new(authorization::Policy::from_env(guests.as_ref().map(|g| &g.config)));
+    let policy = Arc::new(authorization::Policy::from_env_with(
+        guests.as_ref().map(|g| &g.config),
+        providers.as_ref(),
+    ));
     tracing::info!(
         admin_role = authorization::ADMIN_ROLE,
         user_playbooks = ?policy.user_playbooks,
@@ -321,7 +335,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/check-access", post(auth::check_access))
         // Internal callback endpoint for workers to deliver results via HTTP
         .route("/api/internal/callback", post(auth::internal_callback))
+        // End the caller's session (any kind; crate::auth_providers).
+        .route("/api/auth/logout", post(auth_providers::logout))
         .with_state(auth_state.clone());
+    // Auth providers: mounted only when configured (never in scoped-app mode, below).
+    let provider_routes = match providers.clone() {
+        Some(p) => Router::new()
+            .route("/api/auth/providers/{provider}/{action}", post(auth_providers::sign_in))
+            .with_state(Arc::new(auth_providers::ProviderState::new(p, auth_state.clone()))),
+        None => Router::new(),
+    };
     // Guest sessions: mounted only in guest mode (and never in scoped-app mode, below).
     let guest_routes = match guests.clone() {
         Some(g) => Router::new().route("/api/auth/guest", post(guest::mint)).with_state(g),
@@ -430,6 +453,7 @@ async fn main() -> anyhow::Result<()> {
         Router::new()
         .merge(public_routes)
         .merge(guest_routes)
+        .merge(provider_routes)
         .merge(sharding_diagnostic_routes)
         .merge(sse_routes)
         .merge(ingress_routes)
