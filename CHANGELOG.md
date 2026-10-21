@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.17.0](https://github.com/noetl/gateway/compare/v3.16.0...v3.17.0) (2026-10-21)
+
+### Features
+
+* **auth:** auth providers, pluggable sign-in playbooks with gateway-minted sessions ([0a54181](https://github.com/noetl/gateway/commit/0a541812dcac558c89f22e91221af20c6d062b4a))
+
 ## [3.16.0](https://github.com/noetl/gateway/compare/v3.15.0...v3.16.0) (2026-10-20)
 
 ### Features
