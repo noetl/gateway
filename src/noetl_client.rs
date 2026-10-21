@@ -350,6 +350,53 @@ impl NoetlClient {
         Ok((callback_status, data))
     }
 
+    /// Mint a session for an identity an auth-provider playbook verified
+    /// (`POST /api/auth/provider-session`, gateway auth providers). Sends the
+    /// gateway's `NOETL_AUTH_MINT_KEY` as `X-NoETL-Auth-Mint`. Returns the same
+    /// `(status, data)` pair as [`Self::login_via_api`], for `finish_login`.
+    pub async fn mint_provider_session(
+        &self,
+        mint_key: &str,
+        body: serde_json::Value,
+    ) -> anyhow::Result<(String, serde_json::Value)> {
+        let url = format!("{}/api/auth/provider-session", self.base_url.trim_end_matches('/'));
+        let res = self
+            .http
+            .post(&url)
+            .header("x-noetl-auth-mint", mint_key)
+            .json(&body)
+            .send()
+            .await
+            .context("mint_provider_session: send")?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Provider session request failed: {status}"));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&text).context("mint_provider_session: parse")?;
+        let callback_status = parsed.get("status").and_then(|v| v.as_str()).unwrap_or("error").to_string();
+        let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        Ok((callback_status, data))
+    }
+
+    /// End a session (`POST /api/auth/logout`).
+    pub async fn logout(&self, session_token: &str, credential: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/auth/logout", self.base_url.trim_end_matches('/'));
+        let res = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({ "session_token": session_token, "credential": credential }))
+            .send()
+            .await
+            .context("logout: send")?;
+        let status = res.status();
+        let parsed: serde_json::Value = res.json().await.unwrap_or_default();
+        if !status.is_success() || parsed.get("status").and_then(|v| v.as_str()) != Some("ok") {
+            return Err(anyhow::anyhow!("Logout failed: {status}"));
+        }
+        Ok(())
+    }
+
     /// Authorize a user for a playbook synchronously via the server's in-process
     /// authz fast-path (`POST /api/auth/check-playbook-access`), bypassing the
     /// multi-hop off-server `check_playbook_access` drive that the pre-turn gate

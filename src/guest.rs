@@ -137,8 +137,9 @@ struct Payload {
 }
 
 /// Sliding-window counters: timestamps (unix secs) per key, last hour only.
+/// Also used by `crate::auth_providers`.
 #[derive(Default)]
-struct Limiter {
+pub(crate) struct Limiter {
     hits: HashMap<String, VecDeque<u64>>,
 }
 
@@ -151,7 +152,7 @@ impl Limiter {
 
     /// Admit one event against every `(key, limit)` or none of them. On
     /// refusal, the seconds until the tightest window frees a slot.
-    fn admit(&mut self, keys: &[(String, usize)], now: u64) -> Result<(), u64> {
+    pub(crate) fn admit(&mut self, keys: &[(String, usize)], now: u64) -> Result<(), u64> {
         if self.hits.len() > SWEEP_AT {
             self.hits.retain(|_, q| {
                 Self::prune(q, now);
@@ -187,7 +188,7 @@ pub struct GuestSessions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimited(pub u64);
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -243,19 +244,7 @@ impl GuestSessions {
     /// trusted proxy in front of the gateway appended. Earlier entries are
     /// whatever the client sent and are never trusted.
     pub fn client_ip(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
-        if let Some(h) = &self.config.ip_header {
-            if let Some(ip) = headers
-                .get_all(h)
-                .iter()
-                .filter_map(|v| v.to_str().ok())
-                .flat_map(|v| v.split(','))
-                .map(str::trim)
-                .rfind(|v| !v.is_empty())
-            {
-                return ip.to_string();
-            }
-        }
-        peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".into())
+        client_ip(self.config.ip_header.as_ref(), headers, peer)
     }
 
     fn limit(&self, keys: &[(String, usize)], now: u64) -> Result<(), RateLimited> {
@@ -282,6 +271,27 @@ impl GuestSessions {
     pub fn admit_run(&self, guest: &Guest) -> Result<(), RateLimited> {
         self.admit_run_at(guest, now_secs())
     }
+}
+
+/// The client IP: the trusted `ip_header` (`GATEWAY_CLIENT_IP_HEADER`), else
+/// the socket peer, else "unknown". From a list (`X-Forwarded-For: client,
+/// proxy1, ...`, possibly over several header lines) it takes the LAST entry:
+/// the one the trusted proxy in front of the gateway appended. Earlier entries
+/// are whatever the client sent and are never trusted.
+pub(crate) fn client_ip(ip_header: Option<&HeaderName>, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    if let Some(h) = ip_header {
+        if let Some(ip) = headers
+            .get_all(h)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .rfind(|v| !v.is_empty())
+        {
+            return ip.to_string();
+        }
+    }
+    peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".into())
 }
 
 #[derive(Serialize)]

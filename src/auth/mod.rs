@@ -598,7 +598,7 @@ pub async fn login(
 /// good login, otherwise an error envelope whose reason is surfaced as
 /// `InvalidCredentialsWithReason`.  Keeping one implementation guarantees the
 /// two paths make byte-identical auth decisions.
-async fn finish_login(
+pub(crate) async fn finish_login(
     state: &AuthState,
     callback_status: &str,
     output: &serde_json::Value,
