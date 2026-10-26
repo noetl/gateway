@@ -12,7 +12,10 @@
 //!   `GATEWAY_GUEST_PLAYBOOKS` and read or cancel only executions it started;
 //!   `crate::identity` keeps refusing a non-null `uid` (no subject).
 //! * Abuse bounds, all per rolling hour and per gateway pod: executions per
-//!   guest, per client IP and in total, and guest mints per client IP.
+//!   guest, per client IP and in total, and guest mints per client IP. A
+//!   playbook in `GATEWAY_GUEST_PLAYBOOK_LIMITS` counts against its own three
+//!   limits instead of the shared ones (e.g. a cheap status poll that must
+//!   not use up the budget of the playbook it polls for).
 //!
 //! Spec: noetl/ai-meta `specs/active/2026-10-19-gateway-guest-sessions`.
 
@@ -50,9 +53,20 @@ pub struct Guest {
     pub ip: String,
 }
 
+/// Per-hour limits of one playbook with its own budget
+/// (`GATEWAY_GUEST_PLAYBOOK_LIMITS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybookLimits {
+    pub per_guest: usize,
+    pub per_ip: usize,
+    pub total: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct GuestConfig {
     pub playbooks: Vec<String>,
+    /// Playbooks limited apart from the shared budget.
+    pub playbook_limits: HashMap<String, PlaybookLimits>,
     key: Vec<u8>,
     pub ttl_secs: u64,
     pub runs_per_guest: usize,
@@ -117,8 +131,11 @@ impl GuestConfig {
                 HeaderName::try_from(h.as_str()).map_err(|e| anyhow::anyhow!("GATEWAY_CLIENT_IP_HEADER={h:?}: {e}"))?,
             ),
         };
+        let playbook_limits =
+            Self::playbook_limits(&get("GATEWAY_GUEST_PLAYBOOK_LIMITS").unwrap_or_default(), &playbooks)?;
         Ok(Some(Self {
             playbooks,
+            playbook_limits,
             key,
             ttl_secs: num("GATEWAY_GUEST_TTL_SECS", 3600)?.max(60),
             runs_per_guest: num("GATEWAY_GUEST_RUNS_PER_HOUR", 20)? as usize,
@@ -127,6 +144,37 @@ impl GuestConfig {
             total_runs: num("GATEWAY_GUEST_TOTAL_RUNS_PER_HOUR", 600)? as usize,
             ip_header,
         }))
+    }
+}
+
+impl GuestConfig {
+    /// `path=per_guest/per_ip/total,...`: each path must be a guest playbook,
+    /// at most once.
+    fn playbook_limits(spec: &str, playbooks: &[String]) -> anyhow::Result<HashMap<String, PlaybookLimits>> {
+        let mut out = HashMap::new();
+        for entry in crate::authorization::csv(spec) {
+            let bad = || anyhow::anyhow!("GATEWAY_GUEST_PLAYBOOK_LIMITS: {entry:?} is not path=per_guest/per_ip/total");
+            let (path, nums) = entry.split_once('=').ok_or_else(bad)?;
+            let path = path.trim();
+            let n: Vec<usize> = nums
+                .split('/')
+                .map(|v| v.trim().parse::<usize>())
+                .collect::<Result<_, _>>()
+                .map_err(|_| bad())?;
+            let [per_guest, per_ip, total] = n[..] else {
+                return Err(bad());
+            };
+            if !playbooks.iter().any(|p| p == path) {
+                anyhow::bail!("GATEWAY_GUEST_PLAYBOOK_LIMITS: {path} is not in GATEWAY_GUEST_PLAYBOOKS");
+            }
+            if out
+                .insert(path.to_string(), PlaybookLimits { per_guest, per_ip, total })
+                .is_some()
+            {
+                anyhow::bail!("GATEWAY_GUEST_PLAYBOOK_LIMITS: {path} is listed twice");
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -256,20 +304,26 @@ impl GuestSessions {
         self.limit(&[(format!("mint:{ip}"), self.config.mints_per_ip)], now)
     }
 
-    /// One guest execution: per guest, per client IP and the global ceiling.
-    pub fn admit_run_at(&self, guest: &Guest, now: u64) -> Result<(), RateLimited> {
-        self.limit(
-            &[
+    /// One guest execution of `playbook`: per guest, per client IP and the
+    /// global ceiling, in the playbook's own budget when it has one.
+    pub fn admit_run_at(&self, guest: &Guest, playbook: &str, now: u64) -> Result<(), RateLimited> {
+        let keys = match self.config.playbook_limits.get(playbook) {
+            Some(l) => [
+                (format!("run:{playbook}:g:{}", guest.id), l.per_guest),
+                (format!("run:{playbook}:ip:{}", guest.ip), l.per_ip),
+                (format!("run:{playbook}:all"), l.total),
+            ],
+            None => [
                 (format!("run:g:{}", guest.id), self.config.runs_per_guest),
                 (format!("run:ip:{}", guest.ip), self.config.runs_per_ip),
                 ("run:all".to_string(), self.config.total_runs),
             ],
-            now,
-        )
+        };
+        self.limit(&keys, now)
     }
 
-    pub fn admit_run(&self, guest: &Guest) -> Result<(), RateLimited> {
-        self.admit_run_at(guest, now_secs())
+    pub fn admit_run(&self, guest: &Guest, playbook: &str) -> Result<(), RateLimited> {
+        self.admit_run_at(guest, playbook, now_secs())
     }
 }
 
@@ -497,26 +551,95 @@ mod tests {
             id: "c".into(),
             ip: "2.2.2.2".into(),
         };
-        assert!(g.admit_run_at(&a, 100).is_ok());
-        assert!(g.admit_run_at(&a, 110).is_ok());
+        assert!(g.admit_run_at(&a, "a/b", 100).is_ok());
+        assert!(g.admit_run_at(&a, "a/b", 110).is_ok());
         // Per guest: the third run waits until the first leaves the window.
-        assert_eq!(g.admit_run_at(&a, 120), Err(RateLimited(3600 - 20)));
+        assert_eq!(g.admit_run_at(&a, "a/b", 120), Err(RateLimited(3600 - 20)));
         // Per IP: b shares a's address (2 used of 3).
-        assert!(g.admit_run_at(&b, 130).is_ok());
-        assert!(g.admit_run_at(&b, 131).is_err());
+        assert!(g.admit_run_at(&b, "a/b", 130).is_ok());
+        assert!(g.admit_run_at(&b, "a/b", 131).is_err());
         // Total: 3 used of 4.
-        assert!(g.admit_run_at(&c2, 140).is_ok());
+        assert!(g.admit_run_at(&c2, "a/b", 140).is_ok());
         assert!(g
             .admit_run_at(
                 &Guest {
                     id: "d".into(),
                     ip: "3.3.3.3".into()
                 },
+                "a/b",
                 150
             )
             .is_err());
         // A refused run consumed nothing: an hour after the first run, a may run again.
-        assert!(g.admit_run_at(&a, 100 + 3600).is_ok());
+        assert!(g.admit_run_at(&a, "a/b", 100 + 3600).is_ok());
+    }
+
+    #[test]
+    fn a_playbook_with_its_own_limits_has_its_own_budget() {
+        let key = "k".repeat(32);
+        let env = [
+            ("GATEWAY_GUEST_PLAYBOOKS", "site/turn,site/inbox"),
+            ("GATEWAY_GUEST_TOKEN_KEY", key.as_str()),
+            ("GATEWAY_GUEST_RUNS_PER_HOUR", "1"),
+            ("GATEWAY_GUEST_PLAYBOOK_LIMITS", " site/inbox = 2/3/4 "),
+        ];
+        let c = cfg(&env).unwrap().unwrap();
+        assert_eq!(
+            c.playbook_limits.get("site/inbox"),
+            Some(&PlaybookLimits {
+                per_guest: 2,
+                per_ip: 3,
+                total: 4
+            })
+        );
+        assert!(!c.playbook_limits.contains_key("site/turn"));
+        let g = GuestSessions::new(c);
+        let guest = |id: &str, ip: &str| Guest {
+            id: id.into(),
+            ip: ip.into(),
+        };
+        let (a, b, d) = (guest("a", "1.1.1.1"), guest("b", "1.1.1.1"), guest("d", "2.2.2.2"));
+        // The shared budget (1 per guest) is spent by the turn...
+        assert!(g.admit_run_at(&a, "site/turn", 10).is_ok());
+        assert!(g.admit_run_at(&a, "site/turn", 11).is_err());
+        // ...and polling still runs, on its own: 2 per guest,
+        assert!(g.admit_run_at(&a, "site/inbox", 12).is_ok());
+        assert!(g.admit_run_at(&a, "site/inbox", 13).is_ok());
+        assert_eq!(g.admit_run_at(&a, "site/inbox", 14), Err(RateLimited(3600 - 2)));
+        // 3 per IP (b shares a's address),
+        assert!(g.admit_run_at(&b, "site/inbox", 15).is_ok());
+        assert!(g.admit_run_at(&b, "site/inbox", 16).is_err());
+        // 4 in total.
+        assert!(g.admit_run_at(&d, "site/inbox", 17).is_ok());
+        assert!(g.admit_run_at(&d, "site/inbox", 18).is_err());
+        // Polling didn't touch the shared budget: b's turn still runs.
+        assert!(g.admit_run_at(&b, "site/turn", 19).is_ok());
+    }
+
+    #[test]
+    fn playbook_limits_must_be_well_formed() {
+        let key = "k".repeat(32);
+        let with = |spec: &str| {
+            cfg(&[
+                ("GATEWAY_GUEST_PLAYBOOKS", "a/b,c/d"),
+                ("GATEWAY_GUEST_TOKEN_KEY", key.as_str()),
+                ("GATEWAY_GUEST_PLAYBOOK_LIMITS", spec),
+            ])
+        };
+        assert!(with("").unwrap().unwrap().playbook_limits.is_empty());
+        let two = with("a/b=1/2/3, c/d=4/5/6").unwrap().unwrap().playbook_limits;
+        assert_eq!(two.len(), 2);
+        assert_eq!(
+            two["c/d"],
+            PlaybookLimits {
+                per_guest: 4,
+                per_ip: 5,
+                total: 6
+            }
+        );
+        for bad in ["a/b", "a/b=1/2", "a/b=1/2/3/4", "a/b=1/x/3", "a/b=-1/2/3", "x/y=1/2/3", "a/b=1/2/3,a/b=4/5/6"] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -542,6 +665,7 @@ mod tests {
                     id: "a".into(),
                     ip: "x".into()
                 },
+                "a/b",
                 5
             ),
             Err(RateLimited(3600))

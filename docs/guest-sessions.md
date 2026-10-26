@@ -16,6 +16,7 @@ Off by default. A gateway with no guest configuration behaves exactly as before:
 | `GATEWAY_GUEST_IP_RUNS_PER_HOUR` | 60 | Guest executions per client IP per rolling hour. |
 | `GATEWAY_GUEST_IP_SESSIONS_PER_HOUR` | 20 | Guest sessions minted per client IP per rolling hour. |
 | `GATEWAY_GUEST_TOTAL_RUNS_PER_HOUR` | 600 | Ceiling on all guest executions per rolling hour. |
+| `GATEWAY_GUEST_PLAYBOOK_LIMITS` | unset | Playbooks with their own budget: `path=per_guest/per_ip/total,...` (per rolling hour). A listed playbook counts only against these three limits, never the shared ones above, so a cheap status poll can't use up the budget of the playbook a visitor actually talks to (and vice versa). Each path must be in `GATEWAY_GUEST_PLAYBOOKS`, at most once; anything malformed refuses to start. |
 | `GATEWAY_CLIENT_IP_HEADER` | unset | Trusted header carrying the client IP, e.g. `cf-connecting-ip`. From a list such as `x-forwarded-for` the gateway takes the **last** entry (the one the trusted proxy appended); client-supplied entries are ignored. Unset = the TCP peer address. |
 
 Limits are kept in memory per gateway pod, so N replicas allow up to N times each limit.
