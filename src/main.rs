@@ -201,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
             mints_per_ip = g.config.mints_per_ip,
             total_runs = g.config.total_runs,
             ip_header = ?g.config.ip_header,
+            playbook_limits = ?g.config.playbook_limits,
             "Guest sessions enabled: POST /api/auth/guest"
         );
     }
