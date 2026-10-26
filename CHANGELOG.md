@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.18.0](https://github.com/noetl/gateway/compare/v3.17.0...v3.18.0) (2026-10-26)
+
+### Features
+
+* **guest:** log the per-playbook guest limits at startup ([33a54e6](https://github.com/noetl/gateway/commit/33a54e6e6cd23d849b459ce8aec4ddaa5613a61a))
+* **guest:** per-playbook guest rate limits (GATEWAY_GUEST_PLAYBOOK_LIMITS) ([d75b59d](https://github.com/noetl/gateway/commit/d75b59d51794ae18920e5003063acdf5ad5c5b6f)), closes [noetl/ai-meta#484](https://github.com/noetl/ai-meta/issues/484)
+
 ## [3.17.0](https://github.com/noetl/gateway/compare/v3.16.0...v3.17.0) (2026-10-21)
 
 ### Features
