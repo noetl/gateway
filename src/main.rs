@@ -27,6 +27,8 @@ mod auth_providers_routes_tests;
 mod authorization;
 #[cfg(test)]
 mod authorization_routes_tests;
+#[cfg(test)]
+mod user_limits_routes_tests;
 mod callbacks;
 mod config;
 mod connection_hub;
@@ -50,6 +52,7 @@ mod session_cache;
 mod scoped_apps;
 mod sharding;
 mod sse;
+mod user_limits;
 
 use crate::callbacks::CallbackManager;
 use crate::config::GatewayConfig;
@@ -284,6 +287,15 @@ async fn main() -> anyhow::Result<()> {
     // Wrap config in Arc for sharing with GraphQL context
     let config_arc = Arc::new(config.clone());
 
+    // Per-playbook limits for signed-in users (crate::user_limits): off unless
+    // GATEWAY_USER_PLAYBOOK_LIMITS is set.
+    let user_limits = user_limits::UserLimits::from_env().log("Invalid user playbook limits")?;
+    if let Some(u) = user_limits.as_ref() {
+        let mut limits: Vec<String> = u.limits.iter().map(|(p, l)| format!("{p}={}/{}", l.per_user, l.total)).collect();
+        limits.sort();
+        tracing::info!(?limits, "Per-playbook limits for signed-in users");
+    }
+
     let mut schema = Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
         .data(noetl_arc.clone())
         .data(proxy_state.clone())
@@ -293,6 +305,9 @@ async fn main() -> anyhow::Result<()> {
         .data(execution_owners.clone());
     if let Some(g) = guests.clone() {
         schema = schema.data(g);
+    }
+    if let Some(u) = user_limits.clone() {
+        schema = schema.data(u);
     }
     let schema: AppSchema = schema.finish();
 

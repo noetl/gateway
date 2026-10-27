@@ -125,6 +125,32 @@ fn admit_guest_run(ctx: &Context<'_>, playbook: &str) -> GqlResult<()> {
     })
 }
 
+/// A signed-in, non-admin user's start of a playbook listed in
+/// `GATEWAY_USER_PLAYBOOK_LIMITS` counts against its per-user and total
+/// hourly limits (`crate::user_limits`); refused like a guest, with
+/// `RATE_LIMITED`. Guests, admins and unlisted playbooks pass untouched.
+fn admit_user_run(ctx: &Context<'_>, playbook: &str) -> GqlResult<()> {
+    use async_graphql::ErrorExtensions;
+    let Some(user) = ctx.data_opt::<UserContext>().filter(|u| u.guest.is_none()) else {
+        return Ok(());
+    };
+    let Some(limits) = ctx.data_opt::<Arc<crate::user_limits::UserLimits>>() else {
+        return Ok(());
+    };
+    let admin = ctx.data_opt::<Arc<crate::authorization::Policy>>().is_some_and(|p| p.is_admin(user));
+    if admin {
+        return Ok(());
+    }
+    limits.admit(user.user_id, playbook).map_err(|crate::guest::RateLimited(wait)| {
+        crate::ingress::record_route_authz("user_rate_limited");
+        tracing::debug!(retry_after = wait, "user executePlaybook refused: rate limit");
+        async_graphql::Error::new("Too many requests; try again later").extend_with(|_, e| {
+            e.set("code", "RATE_LIMITED");
+            e.set("retryAfter", wait);
+        })
+    })
+}
+
 async fn record_owner(ctx: &Context<'_>, execution_id: &str) {
     crate::authorization::record_owner(
         ctx.data_opt::<Arc<ExecutionOwners>>(),
@@ -203,6 +229,7 @@ impl MutationRoot {
         authorize_execute(ctx, &name, catalog_kind)?;
         bind_caller_identity(ctx, &mut args, &name, false)?;
         admit_guest_run(ctx, &name)?;
+        admit_user_run(ctx, &name)?;
 
         // If client_id is provided, set up async callback
         let request_id = if let Some(cid) = client_id.as_ref() {
