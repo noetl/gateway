@@ -53,8 +53,7 @@ fn user(user_id: i32, roles: &[&str]) -> UserContext {
 
 /// GraphQL as `caller`, sharing one `limits` across gateways (one pod).
 async fn gateway(noetl: &str, caller: UserContext, limits: Option<Arc<UserLimits>>) -> String {
-    let mut policy = Policy::default();
-    policy.user_playbooks = vec!["site/inbox".into(), "site/turn".into()];
+    let policy = Policy { user_playbooks: vec!["site/inbox".into(), "site/turn".into()], ..Policy::default() };
     let mut schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription)
         .data(Arc::new(NoetlClient::new(noetl.to_string())))
         .data(Arc::new(policy));
