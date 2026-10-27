@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.19.0](https://github.com/noetl/gateway/compare/v3.18.0...v3.19.0) (2026-10-27)
+
+### Features
+
+* **authz:** per-playbook rate limits for signed-in users ([#63](https://github.com/noetl/gateway/issues/63)) ([b5c649b](https://github.com/noetl/gateway/commit/b5c649b3bce8a357f9eb110c48886be6e34937a1))
+
 ## [3.18.0](https://github.com/noetl/gateway/compare/v3.17.0...v3.18.0) (2026-10-26)
 
 ### Features
