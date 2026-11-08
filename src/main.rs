@@ -32,6 +32,7 @@ mod user_limits_routes_tests;
 mod callbacks;
 mod config;
 mod connection_hub;
+mod dsl_public;
 mod ehdb_kv;
 mod event_feed;
 mod graphql;
@@ -461,6 +462,18 @@ async fn main() -> anyhow::Result<()> {
     // A configured scoped-app gateway is an isolated user-facing surface.
     // Generic proxy, GraphQL, SSE and push ingress are intentionally not mounted.
     let scoped = scoped_apps::ScopedApps::from_env(&config.noetl.base_url)?;
+
+    // Public, read-only DSL knowledge-base routes (crate::dsl_public): off
+    // unless GATEWAY_PUBLIC_DSL=on. No auth, no credentials forwarded.
+    let dsl_public_routes = match dsl_public::DslPublicConfig::from_env()? {
+        Some(c) => {
+            tracing::info!(per_ip_per_hour = c.per_ip, total_per_hour = c.total,
+                "Public DSL routes ON: GET /noetl/api/dsl/{{version,schema,tools}}, POST /noetl/api/dsl/validate");
+            dsl_public::routes(dsl_public::DslPublic::new(c, &config.noetl.base_url)?)
+        }
+        None => Router::new(),
+    };
+
     let app = if let Some(state) = scoped {
         Router::new().merge(public_routes).merge(metrics_routes)
             .merge(scoped_apps::routes(state).route_layer(middleware::from_fn_with_state(
@@ -475,6 +488,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(ingress_routes)
         .merge(metrics_routes)
         .merge(graphql_routes)
+        .merge(dsl_public_routes)
         .merge(proxy_routes)
     }.layer(cors);
 
