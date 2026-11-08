@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.20.0](https://github.com/noetl/gateway/compare/v3.19.0...v3.20.0) (2026-11-08)
+
+### Features
+
+* **gateway:** public read-only DSL KB routes behind GATEWAY_PUBLIC_DSL (off by default) ([#64](https://github.com/noetl/gateway/issues/64)) ([a0a1217](https://github.com/noetl/gateway/commit/a0a121780e409ba73823ee638fbaf34fa09e5132))
+
 ## [3.19.0](https://github.com/noetl/gateway/compare/v3.18.0...v3.19.0) (2026-10-27)
 
 ### Features
