@@ -43,6 +43,7 @@ mod identity;
 #[cfg(test)]
 mod identity_routes_tests;
 mod ingress;
+mod mcp_proxy;
 mod noetl_client;
 mod runtime_registration;
 mod playbook_state;
@@ -446,7 +447,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Protected proxy routes - forward authenticated requests to NoETL server
     // Route: /noetl/{path} -> NoETL /api/{path}
-    let proxy_routes = Router::new()
+    let proxy_routes = Router::new();
+    // Playbook MCP (noetl/ai-meta#539 Phase 5): `/noetl/mcp` with per-user
+    // `tools/list` filtering and `tools/call` authorization. Off unless
+    // GATEWAY_MCP_PROXY=true; unset, `/noetl/mcp` stays on the generic proxy
+    // (admins forwarded, everyone else 403). The static routes win over the
+    // catch-all below.
+    let proxy_routes = if mcp_proxy::mcp_proxy_enabled() {
+        tracing::info!("MCP proxy enabled: POST /noetl/mcp, /noetl/mcp/{{*server}}");
+        proxy_routes
+            .route("/noetl/mcp", post(mcp_proxy::mcp_root))
+            .route("/noetl/mcp/{*server}", post(mcp_proxy::mcp_named))
+    } else {
+        proxy_routes
+    };
+    let proxy_routes = proxy_routes
         .route("/noetl/{*path}", get(proxy::proxy_get))
         .route("/noetl/{*path}", post(proxy::proxy_post))
         .route("/noetl/{*path}", put(proxy::proxy_put))
