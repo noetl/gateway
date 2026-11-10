@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.21.0](https://github.com/noetl/gateway/compare/v3.20.0...v3.21.0) (2026-11-10)
+
+### Features
+
+* **mcp:** /noetl/mcp with per-user tools/list and tools/call authorization ([#65](https://github.com/noetl/gateway/issues/65)) ([18c87af](https://github.com/noetl/gateway/commit/18c87af1b47bc8a246af0cb7eee824440d33e25e)), closes [noetl/ai-meta#539](https://github.com/noetl/ai-meta/issues/539) [noetl/ai-meta#539](https://github.com/noetl/ai-meta/issues/539)
+
 ## [3.20.0](https://github.com/noetl/gateway/compare/v3.19.0...v3.20.0) (2026-11-08)
 
 ### Features
