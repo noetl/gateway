@@ -43,6 +43,7 @@ mod identity;
 #[cfg(test)]
 mod identity_routes_tests;
 mod ingress;
+mod instance_proxy;
 mod mcp_proxy;
 mod noetl_client;
 mod runtime_registration;
@@ -488,6 +489,17 @@ async fn main() -> anyhow::Result<()> {
         }
         None => Router::new(),
     };
+    // NoETL instance routes (crate::instance_proxy): off unless GATEWAY_INSTANCE_PROXY=on.
+    // No gateway auth (each body is a signed envelope the server verifies); operator routes
+    // are never exposed.
+    let instance_routes = match instance_proxy::InstanceProxyConfig::from_env()? {
+        Some(c) => {
+            tracing::info!(per_ip_per_hour = c.per_ip, total_per_hour = c.total,
+                "Instance proxy ON: POST /api/instances/{{register,deregister,discover,enroll,inbox,tasks/*}}");
+            instance_proxy::routes(instance_proxy::InstanceProxy::new(c, &config.noetl.base_url)?)
+        }
+        None => Router::new(),
+    };
 
     let app = if let Some(state) = scoped {
         Router::new().merge(public_routes).merge(metrics_routes)
@@ -504,6 +516,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(metrics_routes)
         .merge(graphql_routes)
         .merge(dsl_public_routes)
+        .merge(instance_routes)
         .merge(proxy_routes)
     }.layer(cors);
 
