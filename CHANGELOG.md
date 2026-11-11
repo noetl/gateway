@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.22.0](https://github.com/noetl/gateway/compare/v3.21.0...v3.22.0) (2026-11-11)
+
+### Features
+
+* **agents:** /noetl/agents with per-user cards, send authorization and owner-only tasks ([eaa793f](https://github.com/noetl/gateway/commit/eaa793fc8c63c42b822e7d1bf180d79cfea326c5))
+* **agents:** guest sends count against the guest run limits ([2065e4c](https://github.com/noetl/gateway/commit/2065e4c9c85d0518412067fe49d4b5dea1075180))
+
 ## [3.21.0](https://github.com/noetl/gateway/compare/v3.20.0...v3.21.0) (2026-11-10)
 
 ### Features
