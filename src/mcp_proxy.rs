@@ -57,6 +57,8 @@ const PLAYBOOK_META: &str = "noetl/playbook";
 const EXECUTION_META: &str = "noetl/execution_id";
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
+/// Implementation-defined server error: a guest's run limit (HTTP 429, `Retry-After`).
+const RATE_LIMITED: i64 = -32000;
 
 fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
@@ -317,6 +319,25 @@ async fn handle(state: &ProxyState, server: Option<String>, req: Request<Body>) 
                         &rpc_error(&id, INVALID_PARAMS, &format!("unknown tool `{name}`")),
                     );
                 }
+                // A guest's tools/call starts an execution: it counts against the
+                // same per-guest / per-IP / total run limits as executePlaybook
+                // and an agent send.
+                if let Some(guest) = user.guest.as_ref() {
+                    let Some(guests) = state.guests.as_ref() else {
+                        crate::ingress::record_route_authz("denied");
+                        return json_response(StatusCode::FORBIDDEN, &json!({"error": "not authorized"}));
+                    };
+                    let playbook = playbook.as_deref().unwrap_or_default();
+                    if let Err(crate::guest::RateLimited(wait)) = guests.admit_run(guest, playbook) {
+                        crate::ingress::record_route_authz("guest_rate_limited");
+                        tracing::debug!(retry_after = wait, tool = %name, "guest MCP tools/call refused: rate limit");
+                        let mut body = rpc_error(&id, RATE_LIMITED, "Too many requests; try again later");
+                        body["error"]["data"] = json!({"retryAfter": wait});
+                        let mut r = json_response(StatusCode::TOO_MANY_REQUESTS, &body);
+                        r.headers_mut().insert(header::RETRY_AFTER, wait.to_string().parse().unwrap());
+                        return r;
+                    }
+                }
                 crate::ingress::record_route_authz("user_allowed");
             } else {
                 crate::ingress::record_route_authz("admin");
@@ -446,6 +467,14 @@ mod tests {
     }
 
     async fn setup(caller: UserContext) -> (String, Mock, Arc<ExecutionOwners>) {
+        setup_with(caller, None, policy()).await
+    }
+
+    async fn setup_with(
+        caller: UserContext,
+        guests: Option<Arc<crate::guest::GuestSessions>>,
+        pol: Policy,
+    ) -> (String, Mock, Arc<ExecutionOwners>) {
         let mock = Mock::default();
         let up = Router::new().route("/api/{*rest}", post(upstream)).with_state(mock.clone());
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -455,7 +484,8 @@ mod tests {
         let owners = Arc::new(ExecutionOwners::in_memory());
         let state = Arc::new(
             ProxyState::new(format!("http://{up_addr}"))
-                .with_authorization(Arc::new(policy()), Some(owners.clone())),
+                .with_authorization(Arc::new(pol), Some(owners.clone()))
+                .with_guests(guests),
         );
         // Mounted beside the generic catch-all exactly as `main` does, so the
         // test also proves the specific route wins.
@@ -549,5 +579,75 @@ mod tests {
         let (s, init) = rpc(&gw, "/noetl/mcp", "initialize", json!({"protocolVersion": "2025-06-18"})).await;
         assert_eq!(s, 200);
         assert_eq!(init["result"], json!({}));
+    }
+
+    fn guest(id: &str) -> UserContext {
+        UserContext {
+            user_id: 0,
+            auth0_sub: None,
+            guest: Some(crate::guest::Guest {
+                id: id.into(),
+                ip: "203.0.113.9".into(),
+            }),
+            ..user(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_guest_tool_call_counts_against_the_guest_run_limits() {
+        let mut cfg = crate::guest::test_config(&["public/tools/findings"]);
+        cfg.runs_per_guest = 1;
+        let guests = Arc::new(crate::guest::GuestSessions::new(cfg.clone()));
+        let pol = Policy::from_env_with(Some(&cfg), None);
+        let g = guest("g-1");
+        let (gw, mock, owners) = setup_with(g.clone(), Some(guests), pol).await;
+
+        let (s, ok) = rpc(&gw, "/noetl/mcp", "tools/call", json!({"name": "findings", "arguments": {}})).await;
+        assert_eq!(s, 200);
+        assert!(ok.get("result").is_some(), "{ok}");
+        assert!(owners.is_owner("777", &g).await.unwrap(), "the guest owns the execution");
+
+        let calls_before = mock.calls.lock().unwrap().iter().filter(|c| c["method"] == "tools/call").count();
+        let r = reqwest::Client::new()
+            .post(format!("{gw}/noetl/mcp"))
+            .json(&json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "findings", "arguments": {}}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 429);
+        assert!(r.headers().get("retry-after").is_some());
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"]["code"], RATE_LIMITED, "{body}");
+        assert!(body["error"]["data"]["retryAfter"].as_u64().is_some());
+        let calls_after = mock.calls.lock().unwrap().iter().filter(|c| c["method"] == "tools/call").count();
+        assert_eq!(calls_after, calls_before, "the limited call never started an execution");
+
+        // Listing starts nothing and is not counted.
+        let (s, _) = rpc(&gw, "/noetl/mcp", "tools/list", json!({})).await;
+        assert_eq!(s, 200);
+    }
+
+    #[tokio::test]
+    async fn a_guest_without_guest_mode_cannot_call_a_tool() {
+        let cfg = crate::guest::test_config(&["public/tools/findings"]);
+        let (gw, mock, _) = setup_with(guest("g-2"), None, Policy::from_env_with(Some(&cfg), None)).await;
+        let r = reqwest::Client::new()
+            .post(format!("{gw}/noetl/mcp"))
+            .json(&json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "findings"}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 403);
+        assert!(!mock.calls.lock().unwrap().iter().any(|c| c["method"] == "tools/call"));
+    }
+
+    #[tokio::test]
+    async fn signed_in_users_are_not_guest_limited() {
+        let (gw, _, _) = setup(user(1)).await;
+        for _ in 0..3 {
+            let (s, ok) = rpc(&gw, "/noetl/mcp", "tools/call", json!({"name": "findings", "arguments": {}})).await;
+            assert_eq!(s, 200);
+            assert!(ok.get("result").is_some(), "{ok}");
+        }
     }
 }
