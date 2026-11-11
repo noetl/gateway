@@ -47,6 +47,10 @@ pub struct ProxyState {
     /// Who started each execution. `None` refuses every regular-user execution
     /// route: ownership that cannot be checked is not assumed.
     pub owners: Option<Arc<ExecutionOwners>>,
+    /// Guest sessions, when guest mode is on: the run limits a guest's
+    /// execution-starting call on a specific route (e.g. `/noetl/agents/send`)
+    /// must pass. `None` with a guest caller refuses the start.
+    pub guests: Option<Arc<crate::guest::GuestSessions>>,
 }
 
 impl ProxyState {
@@ -72,6 +76,7 @@ impl ProxyState {
                 .unwrap_or_default(),
             policy: Arc::new(Policy::default()),
             owners: None,
+            guests: None,
         }
     }
 
@@ -79,6 +84,12 @@ impl ProxyState {
     pub fn with_authorization(mut self, policy: Arc<Policy>, owners: Option<Arc<ExecutionOwners>>) -> Self {
         self.policy = policy;
         self.owners = owners;
+        self
+    }
+
+    /// Set the guest sessions whose run limits guarded routes enforce.
+    pub fn with_guests(mut self, guests: Option<Arc<crate::guest::GuestSessions>>) -> Self {
+        self.guests = guests;
         self
     }
 

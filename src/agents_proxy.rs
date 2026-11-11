@@ -8,7 +8,7 @@
 //! |---|---|---|
 //! | `GET /noetl/agents` | cards filtered by [`Policy::may_execute`]; `not_served` removed | everything |
 //! | `GET /noetl/agents/cards/{*path}` | 404 unless they may start `path` | forwarded |
-//! | `POST /noetl/agents/send` | 404 unless they may start `agent`; `input` identity-bound to the session; `callback_url` refused (403) | identity-bound; callbacks allowed |
+//! | `POST /noetl/agents/send` | 404 unless they may start `agent`; a guest also passes the guest run limits (429); `input` identity-bound to the session; `callback_url` refused (403) | identity-bound; callbacks allowed |
 //! | `GET /noetl/agents/tasks/{id}` | only a task they started ([`ExecutionOwners`]), else 404 | forwarded |
 //!
 //! A refused agent answers exactly like a missing one (404 "no such agent"), so
@@ -192,6 +192,17 @@ pub async fn send(State(state): State<Arc<ProxyState>>, req: Request<Body>) -> R
             tracing::warn!(user_id = user.user_id, agent = %agent, "agent send refused");
             return no_such_agent();
         }
+        // A guest's send starts an execution: it counts against the same
+        // per-guest / per-IP / total run limits as `executePlaybook`.
+        if let Some(guest) = user.guest.as_ref() {
+            let Some(guests) = state.guests.as_ref() else {
+                return denied();
+            };
+            if let Err(crate::guest::RateLimited(wait)) = guests.admit_run(guest, &agent) {
+                crate::ingress::record_route_authz("guest_rate_limited");
+                return crate::guest::too_many(wait, "Too many requests; try again later");
+            }
+        }
         if body.get("callback_url").is_some_and(|v| !v.is_null()) {
             crate::ingress::record_route_authz("denied");
             return error(
@@ -371,6 +382,14 @@ mod tests {
     }
 
     async fn setup(caller: UserContext) -> (String, Mock, Arc<ExecutionOwners>) {
+        setup_with(caller, None, policy()).await
+    }
+
+    async fn setup_with(
+        caller: UserContext,
+        guests: Option<Arc<crate::guest::GuestSessions>>,
+        pol: Policy,
+    ) -> (String, Mock, Arc<ExecutionOwners>) {
         let mock = Mock::default();
         let up = Router::new()
             .route("/api/agents", get(up_get))
@@ -384,7 +403,9 @@ mod tests {
 
         let owners = Arc::new(ExecutionOwners::in_memory());
         let state = Arc::new(
-            ProxyState::new(format!("http://{up_addr}")).with_authorization(Arc::new(policy()), Some(owners.clone())),
+            ProxyState::new(format!("http://{up_addr}"))
+                .with_authorization(Arc::new(pol), Some(owners.clone()))
+                .with_guests(guests),
         );
         // Beside the generic catch-all, as in `main`: the specific routes must win.
         let app = Router::new()
@@ -485,5 +506,54 @@ mod tests {
         assert_eq!(s, 202);
         assert_eq!(sent["echo"]["uid"], "auth0|user99", "admins are bound too");
         assert_eq!(get_json(format!("{gw}/noetl/agents/tasks/123")).await.0, 200);
+    }
+
+    #[tokio::test]
+    async fn a_guest_send_counts_against_the_guest_run_limits() {
+        let mut cfg = crate::guest::test_config(&["public/agents/helper"]);
+        cfg.runs_per_guest = 1;
+        let guests = Arc::new(crate::guest::GuestSessions::new(cfg.clone()));
+        let pol = Policy::from_env_with(Some(&cfg), None);
+        let g = UserContext {
+            user_id: 0,
+            auth0_sub: None,
+            guest: Some(crate::guest::Guest {
+                id: "g-1".into(),
+                ip: "203.0.113.9".into(),
+            }),
+            ..user(0)
+        };
+        assert!(pol.may_execute(&g, "public/agents/helper", "playbook"));
+        let (gw, mock, owners) = setup_with(g.clone(), Some(guests), pol).await;
+        let send = json!({"agent": "public/agents/helper", "input": {"q": "hi"}});
+        assert_eq!(post_json(format!("{gw}/noetl/agents/send"), send.clone()).await.0, 202);
+        assert!(owners.is_owner("555", &g).await.unwrap(), "the guest owns its task");
+        let r = reqwest::Client::new()
+            .post(format!("{gw}/noetl/agents/send"))
+            .json(&send)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 429);
+        assert!(r.headers().get("retry-after").is_some());
+        let sends = mock.calls.lock().unwrap().iter().filter(|(k, _)| k.starts_with("POST")).count();
+        assert_eq!(sends, 1, "the limited send never reached the server");
+    }
+
+    #[tokio::test]
+    async fn a_guest_without_guest_mode_cannot_send() {
+        let g = UserContext {
+            guest: Some(crate::guest::Guest {
+                id: "g-2".into(),
+                ip: "203.0.113.9".into(),
+            }),
+            ..user(0)
+        };
+        // The guest may start the agent, but guest mode (its limiter) is off.
+        let cfg = crate::guest::test_config(&["public/agents/helper"]);
+        let (gw, mock, _) = setup_with(g, None, Policy::from_env_with(Some(&cfg), None)).await;
+        let (s, _) = post_json(format!("{gw}/noetl/agents/send"), json!({"agent": "public/agents/helper"})).await;
+        assert_eq!(s, 403);
+        assert!(mock.calls.lock().unwrap().is_empty());
     }
 }

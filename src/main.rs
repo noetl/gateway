@@ -284,7 +284,8 @@ async fn main() -> anyhow::Result<()> {
     ));
     let proxy_state = Arc::new(
         ProxyState::with_shards(config.noetl.base_url.clone(), shard_map)
-            .with_authorization(policy.clone(), Some(execution_owners.clone())),
+            .with_authorization(policy.clone(), Some(execution_owners.clone()))
+            .with_guests(guests.clone()),
     );
 
     // Wrap config in Arc for sharing with GraphQL context
