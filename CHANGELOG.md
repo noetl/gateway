@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.22.1](https://github.com/noetl/gateway/compare/v3.22.0...v3.22.1) (2026-11-11)
+
+### Bug Fixes
+
+* **mcp:** a guest tools/call counts against the guest run limits ([e15d527](https://github.com/noetl/gateway/commit/e15d527bce60a55fb8cf405ab4f5abb4478a02dd))
+
 ## [3.22.0](https://github.com/noetl/gateway/compare/v3.21.0...v3.22.0) (2026-11-11)
 
 ### Features
