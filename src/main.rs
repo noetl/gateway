@@ -43,6 +43,7 @@ mod identity;
 #[cfg(test)]
 mod identity_routes_tests;
 mod ingress;
+mod agents_proxy;
 mod mcp_proxy;
 mod noetl_client;
 mod runtime_registration;
@@ -283,7 +284,8 @@ async fn main() -> anyhow::Result<()> {
     ));
     let proxy_state = Arc::new(
         ProxyState::with_shards(config.noetl.base_url.clone(), shard_map)
-            .with_authorization(policy.clone(), Some(execution_owners.clone())),
+            .with_authorization(policy.clone(), Some(execution_owners.clone()))
+            .with_guests(guests.clone()),
     );
 
     // Wrap config in Arc for sharing with GraphQL context
@@ -458,6 +460,20 @@ async fn main() -> anyhow::Result<()> {
         proxy_routes
             .route("/noetl/mcp", post(mcp_proxy::mcp_root))
             .route("/noetl/mcp/{*server}", post(mcp_proxy::mcp_named))
+    } else {
+        proxy_routes
+    };
+    // Playbook agents (build plan item 7, noetl/ai-meta#539): `/noetl/agents/*`
+    // with per-user card filtering, send authorization and owner-only task
+    // reads. Off unless GATEWAY_AGENTS_PROXY=true; unset, `/noetl/agents/*`
+    // stays on the generic proxy (admins forwarded, everyone else 403).
+    let proxy_routes = if agents_proxy::agents_proxy_enabled() {
+        tracing::info!("Agents proxy enabled: /noetl/agents, /noetl/agents/{{cards/*,send,tasks/*}}");
+        proxy_routes
+            .route("/noetl/agents", get(agents_proxy::list))
+            .route("/noetl/agents/cards/{*path}", get(agents_proxy::card))
+            .route("/noetl/agents/send", post(agents_proxy::send))
+            .route("/noetl/agents/tasks/{id}", get(agents_proxy::task))
     } else {
         proxy_routes
     };
