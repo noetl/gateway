@@ -4,12 +4,13 @@
 //! ([noetl/ai-meta#90](https://github.com/noetl/ai-meta/issues/90), RFC §6).
 //!
 //! The gateway is the only component that terminates untrusted inbound push
-//! traffic, so verification lives here.  Three schemes (RFC §6 table):
+//! traffic, so verification lives here.  Four schemes (RFC §6 table):
 //!
 //! | `verify.type` | Check |
 //! |---|---|
 //! | `hmac_sha256` | Recompute `HMAC-SHA256(secret, raw_body)`, constant-time compare against the signature header (optional `sha256=` prefix). |
 //! | `bearer`      | Constant-time compare the bearer token against the expected token. |
+//! | `stripe_signature` | Stripe webhook scheme: parse `t=<unix>,v1=<hex>[,v1=…]` from the signature header (default `stripe-signature`), recompute `HMAC-SHA256(secret, "{t}.{raw_body}")`, constant-time compare against every `v1`, and reject when `|now - t|` exceeds `tolerance_secs` (default 300). |
 //! | `pubsub_oidc` | Validate the Google-signed OIDC JWT: RS256 signature vs Google JWKS, `aud == audience`, `email == service_account`, `email_verified`, not expired. |
 //!
 //! **Security ordering (RFC §7.5):** a caller that fails verification is
@@ -78,6 +79,7 @@ pub fn verify(
     match cfg.verify_type.as_str() {
         "hmac_sha256" => verify_hmac(cfg, headers, body),
         "bearer" => verify_bearer(cfg, headers),
+        "stripe_signature" => verify_stripe(cfg, headers, body, unix_now()),
         "pubsub_oidc" => {
             let jwks =
                 jwks.ok_or_else(|| VerifyRejection::unauthorized("oidc_no_jwks", "no JWKS available for OIDC verify"))?;
@@ -127,6 +129,109 @@ fn verify_hmac(
         Err(VerifyRejection::unauthorized(
             "bad_signature",
             "HMAC signature mismatch",
+        ))
+    }
+}
+
+/// Default replay window for `stripe_signature` (Stripe's own SDK default).
+pub const STRIPE_DEFAULT_TOLERANCE_SECS: u64 = 300;
+
+/// The header that carries the signature/token for a verify config, with the
+/// per-scheme default applied.  Used to scrub it from the forwarded workload
+/// even when the subscription relies on the default header name.
+pub fn signature_header(cfg: &VerifyConfig) -> Option<String> {
+    let default = match cfg.verify_type.as_str() {
+        "hmac_sha256" => "x-signature",
+        "stripe_signature" => "stripe-signature",
+        "bearer" | "pubsub_oidc" => "authorization",
+        _ => return cfg.header.as_ref().map(|h| h.to_ascii_lowercase()),
+    };
+    Some(cfg.header.as_deref().unwrap_or(default).to_ascii_lowercase())
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Stripe webhook signature (`Stripe-Signature: t=…,v1=…`).
+///
+/// Signed payload is `"{t}.{raw_body}"`, keyed with the full endpoint secret
+/// (`whsec_…`, prefix included, exactly as Stripe's SDKs do).  Passes when ANY
+/// `v1` matches (Stripe sends several during secret rotation); `v0` and
+/// unknown keys are ignored.  `now` is injected so tests are deterministic.
+fn verify_stripe(
+    cfg: &VerifyConfig,
+    headers: &serde_json::Map<String, serde_json::Value>,
+    body: &[u8],
+    now: i64,
+) -> Result<(), VerifyRejection> {
+    let header_name = cfg.header.as_deref().unwrap_or("stripe-signature");
+    let secret =
+        cfg.secret.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+            VerifyRejection::forbidden("misconfigured", "stripe_signature verify has no resolved secret")
+        })?;
+    let raw = header_str(headers, header_name).ok_or_else(|| {
+        VerifyRejection::unauthorized("missing_signature", format!("missing signature header '{header_name}'"))
+    })?;
+
+    let mut timestamp: Option<&str> = None;
+    let mut v1: Vec<&str> = Vec::new();
+    for part in raw.split(',') {
+        let Some((k, v)) = part.trim().split_once('=') else {
+            continue;
+        };
+        match k.trim() {
+            "t" => timestamp = Some(v.trim()),
+            "v1" => v1.push(v.trim()),
+            _ => {}
+        }
+    }
+    let ts_str = timestamp.ok_or_else(|| {
+        VerifyRejection::unauthorized("malformed_signature", "stripe signature header has no timestamp")
+    })?;
+    let ts: i64 = ts_str.parse().map_err(|_| {
+        VerifyRejection::unauthorized("malformed_signature", "stripe signature timestamp is not an integer")
+    })?;
+    if v1.is_empty() {
+        return Err(VerifyRejection::unauthorized(
+            "malformed_signature",
+            "stripe signature header has no v1 signature",
+        ));
+    }
+
+    let tolerance = cfg.tolerance_secs.unwrap_or(STRIPE_DEFAULT_TOLERANCE_SECS) as i64;
+    if (now - ts).abs() > tolerance {
+        return Err(VerifyRejection::unauthorized(
+            "stale_timestamp",
+            format!("stripe signature timestamp outside {tolerance}s tolerance"),
+        ));
+    }
+
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| VerifyRejection::forbidden("misconfigured", format!("hmac key: {e}")))?;
+    mac.update(ts_str.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let expected_hex = hex::encode(mac.finalize().into_bytes());
+    let a = expected_hex.as_bytes();
+
+    // Check every candidate without short-circuiting on the first match.
+    let mut matched = subtle::Choice::from(0u8);
+    for sig in &v1 {
+        let b = sig.to_ascii_lowercase();
+        if b.len() == a.len() {
+            matched |= a.ct_eq(b.as_bytes());
+        }
+    }
+    if bool::from(matched) {
+        Ok(())
+    } else {
+        Err(VerifyRejection::unauthorized(
+            "bad_signature",
+            "stripe signature mismatch",
         ))
     }
 }
@@ -296,6 +401,7 @@ mod tests {
             secret: Some("shhh".into()),
             audience: None,
             service_account: None,
+            tolerance_secs: None,
         }
     }
 
@@ -346,6 +452,7 @@ mod tests {
             secret: Some("tok-123".into()),
             audience: None,
             service_account: None,
+            tolerance_secs: None,
         }
     }
 
@@ -616,5 +723,163 @@ lFO21bDlxABcQoPC4GwHh61UrN/dlS9nsZxVz0fH5D/gWj++BLI8EMYFObkkEGHV
         let err = validate_oidc_jwt(&tampered, &jwks, &aud, &sa)
             .expect_err("tampered signature must be rejected by the live Google key");
         assert_eq!(err.reason, "oidc_bad_signature");
+    }
+
+    // ---- stripe_signature ----
+
+    const WHSEC: &str = "whsec_test_secret";
+    const NOW: i64 = 1_764_000_000;
+
+    fn stripe_cfg() -> VerifyConfig {
+        VerifyConfig {
+            verify_type: "stripe_signature".into(),
+            header: None,
+            secret: Some(WHSEC.into()),
+            audience: None,
+            service_account: None,
+            tolerance_secs: None,
+        }
+    }
+
+    fn stripe_sig(secret: &str, t: i64, body: &[u8]) -> String {
+        let mut signed = format!("{t}.").into_bytes();
+        signed.extend_from_slice(body);
+        hmac_hex(secret, &signed)
+    }
+
+    fn stripe_hdr(value: String) -> serde_json::Map<String, serde_json::Value> {
+        hdrs(json!({ "stripe-signature": value }))
+    }
+
+    #[test]
+    fn stripe_valid_signature_passes() {
+        let body = br#"{"id":"evt_1","livemode":false}"#;
+        let h = stripe_hdr(format!("t={NOW},v1={}", stripe_sig(WHSEC, NOW, body)));
+        assert!(verify_stripe(&stripe_cfg(), &h, body, NOW).is_ok());
+    }
+
+    #[test]
+    fn stripe_dispatch_through_verify_uses_scheme() {
+        // Through the public entry point with the real clock.
+        let body = b"{}";
+        let now = unix_now();
+        let h = stripe_hdr(format!("t={now},v1={}", stripe_sig(WHSEC, now, body)));
+        assert!(verify(&stripe_cfg(), &h, body, None).is_ok());
+    }
+
+    #[test]
+    fn stripe_multiple_v1_one_matching_passes() {
+        let body = b"{\"id\":\"evt_2\"}";
+        let good = stripe_sig(WHSEC, NOW, body);
+        let old = stripe_sig("whsec_rotated_out", NOW, body);
+        let h = stripe_hdr(format!("t={NOW},v1={old},v1={good},v0=deadbeef"));
+        assert!(verify_stripe(&stripe_cfg(), &h, body, NOW).is_ok());
+    }
+
+    #[test]
+    fn stripe_tampered_body_rejected() {
+        let h = stripe_hdr(format!("t={NOW},v1={}", stripe_sig(WHSEC, NOW, b"original")));
+        let err = verify_stripe(&stripe_cfg(), &h, b"tampered", NOW).unwrap_err();
+        assert_eq!((err.status, err.reason), (401, "bad_signature"));
+    }
+
+    #[test]
+    fn stripe_wrong_secret_rejected() {
+        let body = b"{}";
+        let h = stripe_hdr(format!("t={NOW},v1={}", stripe_sig("whsec_other", NOW, body)));
+        let err = verify_stripe(&stripe_cfg(), &h, body, NOW).unwrap_err();
+        assert_eq!(err.reason, "bad_signature");
+    }
+
+    #[test]
+    fn stripe_signature_over_body_alone_rejected() {
+        // A plain hmac_sha256 of the body (no "{t}." prefix) must not pass.
+        let body = b"{}";
+        let h = stripe_hdr(format!("t={NOW},v1={}", hmac_hex(WHSEC, body)));
+        assert_eq!(
+            verify_stripe(&stripe_cfg(), &h, body, NOW).unwrap_err().reason,
+            "bad_signature"
+        );
+    }
+
+    #[test]
+    fn stripe_stale_timestamp_rejected() {
+        let body = b"{}";
+        let t = NOW - 301;
+        let h = stripe_hdr(format!("t={t},v1={}", stripe_sig(WHSEC, t, body)));
+        let err = verify_stripe(&stripe_cfg(), &h, body, NOW).unwrap_err();
+        assert_eq!((err.status, err.reason), (401, "stale_timestamp"));
+        // Exactly at the edge is still inside the window.
+        let t = NOW - 300;
+        let h = stripe_hdr(format!("t={t},v1={}", stripe_sig(WHSEC, t, body)));
+        assert!(verify_stripe(&stripe_cfg(), &h, body, NOW).is_ok());
+    }
+
+    #[test]
+    fn stripe_future_timestamp_beyond_tolerance_rejected() {
+        let body = b"{}";
+        let t = NOW + 301;
+        let h = stripe_hdr(format!("t={t},v1={}", stripe_sig(WHSEC, t, body)));
+        assert_eq!(
+            verify_stripe(&stripe_cfg(), &h, body, NOW).unwrap_err().reason,
+            "stale_timestamp"
+        );
+    }
+
+    #[test]
+    fn stripe_custom_tolerance_honoured() {
+        let body = b"{}";
+        let t = NOW - 60;
+        let h = stripe_hdr(format!("t={t},v1={}", stripe_sig(WHSEC, t, body)));
+        let mut cfg = stripe_cfg();
+        cfg.tolerance_secs = Some(30);
+        assert_eq!(
+            verify_stripe(&cfg, &h, body, NOW).unwrap_err().reason,
+            "stale_timestamp"
+        );
+        cfg.tolerance_secs = Some(120);
+        assert!(verify_stripe(&cfg, &h, body, NOW).is_ok());
+    }
+
+    #[test]
+    fn stripe_malformed_header_rejected() {
+        let body = b"{}";
+        let sig = stripe_sig(WHSEC, NOW, body);
+        for bad in [
+            format!("v1={sig}"),              // no timestamp
+            format!("t=notanumber,v1={sig}"), // non-integer timestamp
+            format!("t={NOW}"),               // no v1
+            format!("t={NOW},v0={sig}"),      // only legacy v0
+            "garbage".to_string(),
+        ] {
+            let err = verify_stripe(&stripe_cfg(), &stripe_hdr(bad.clone()), body, NOW).unwrap_err();
+            assert_eq!((err.status, err.reason), (401, "malformed_signature"), "header {bad:?}");
+        }
+    }
+
+    #[test]
+    fn stripe_missing_header_rejected() {
+        let err = verify_stripe(&stripe_cfg(), &hdrs(json!({})), b"{}", NOW).unwrap_err();
+        assert_eq!((err.status, err.reason), (401, "missing_signature"));
+    }
+
+    #[test]
+    fn stripe_missing_secret_is_misconfigured() {
+        let mut cfg = stripe_cfg();
+        cfg.secret = None;
+        let body = b"{}";
+        let h = stripe_hdr(format!("t={NOW},v1={}", stripe_sig(WHSEC, NOW, body)));
+        let err = verify_stripe(&cfg, &h, body, NOW).unwrap_err();
+        assert_eq!((err.status, err.reason), (403, "misconfigured"));
+    }
+
+    #[test]
+    fn signature_header_defaults_per_scheme() {
+        assert_eq!(signature_header(&stripe_cfg()).as_deref(), Some("stripe-signature"));
+        let mut c = hmac_cfg();
+        c.header = None;
+        assert_eq!(signature_header(&c).as_deref(), Some("x-signature"));
+        c.header = Some("X-Sig".into());
+        assert_eq!(signature_header(&c).as_deref(), Some("x-sig"));
     }
 }

@@ -18,7 +18,7 @@
 //! ```text
 //! POST /ingress/{listener}            (no session auth — a source, not a user)
 //!   1. fetch ingress config (cached) — verify scheme + secret + dispatch + directives
-//!   2. verify the delivery (HMAC / bearer / OIDC)
+//!   2. verify the delivery (HMAC / Stripe signature / bearer / OIDC)
 //!        fail → 401/403, metric noetl_ingress_rejected_total, NO forward, NO directives
 //!   3. ON SUCCESS ONLY: parse + resolve header directives (allowlist, RFC §7)
 //!   4. forward POST {server}/api/execute  (one execution per delivery, dedicated pool)
@@ -685,7 +685,8 @@ fn build_envelope(
     http_headers: &serde_json::Map<String, Value>,
     body: &[u8],
 ) -> (Value, serde_json::Map<String, Value>, String) {
-    let safe_headers = strip_sensitive(http_headers, cfg.verify.header.as_deref());
+    let sig_header = verify::signature_header(&cfg.verify);
+    let safe_headers = strip_sensitive(http_headers, sig_header.as_deref());
 
     if cfg.source == "pubsub" {
         if let Some((data, attributes, message_id)) = unwrap_pubsub_push(body) {
@@ -1219,5 +1220,48 @@ mod tests {
         let ok = verify_then_plan(&c, &authed, body, None).unwrap();
         // Authenticated, but the value isn't allowlisted → no redirect.
         assert!(ok.plan.playbook_override.is_none());
+    }
+
+    // ---- stripe_signature end to end (verify gate + header scrub) ----
+
+    #[test]
+    fn stripe_delivery_verified_and_signature_header_scrubbed() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let c: IngressConfig = serde_json::from_value(json!({
+            "listener": "stripe-test",
+            "catalog_path": "muno/subscriptions/stripe-test",
+            "source": "webhook",
+            "subscription_id": "42",
+            "verify": { "type": "stripe_signature", "secret": "whsec_e2e" },
+            "dispatch": { "playbook": "muno/playbooks/payments-webhook", "payload_from": "message.json" }
+        }))
+        .unwrap();
+        let body = br#"{"id":"evt_e2e","type":"payment_intent.succeeded","livemode":false}"#;
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut m = <Hmac<Sha256>>::new_from_slice(b"whsec_e2e").unwrap();
+        m.update(format!("{t}.").as_bytes());
+        m.update(body);
+        let sig = hex::encode(m.finalize().into_bytes());
+
+        let forged: serde_json::Map<String, Value> =
+            serde_json::from_value(json!({ "stripe-signature": format!("t={t},v1={}", "0".repeat(64)) })).unwrap();
+        assert_eq!(
+            verify_then_plan(&c, &forged, body, None).unwrap_err().reason,
+            "bad_signature"
+        );
+
+        let authed: serde_json::Map<String, Value> = serde_json::from_value(json!({
+            "stripe-signature": format!("t={t},v1={sig}"),
+            "content-type": "application/json"
+        }))
+        .unwrap();
+        let ok = verify_then_plan(&c, &authed, body, None).unwrap();
+        let text = serde_json::to_string(&ok.envelope).unwrap();
+        assert!(!text.contains("stripe-signature"), "signature header leaked: {text}");
+        assert!(text.contains("evt_e2e"));
     }
 }
