@@ -23,6 +23,9 @@ pub struct VerifyConfig {
     pub audience: Option<String>,
     #[serde(default)]
     pub service_account: Option<String>,
+    /// `stripe_signature` only: max |now - t| in seconds (default 300).
+    #[serde(default)]
+    pub tolerance_secs: Option<u64>,
 }
 
 /// Dispatch config (mirror of the server's `DispatchConfig`).
